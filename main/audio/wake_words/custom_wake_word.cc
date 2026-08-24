@@ -81,6 +81,27 @@ void CustomWakeWord::ParseWakenetModelConfig() {
     cJSON_Delete(root);
 }
 
+void CustomWakeWord::AddWakeCommands(const char* phrases, const char* display) {
+    if (phrases == nullptr || display == nullptr) {
+        return;
+    }
+
+    const std::string remaining(phrases);
+    size_t start = 0;
+    while (start <= remaining.size()) {
+        const size_t comma = remaining.find(',', start);
+        const size_t end = comma == std::string::npos ? remaining.size() : comma;
+        const size_t first = remaining.find_first_not_of(" \t", start);
+        if (first != std::string::npos && first < end) {
+            const size_t last = remaining.find_last_not_of(" \t", end - 1);
+            commands_.push_back({remaining.substr(first, last - first + 1), display, "wake"});
+        }
+        if (comma == std::string::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+}
 
 bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) {
     codec_ = codec;
@@ -92,7 +113,7 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
         owns_models_ = models_ != nullptr;
 #ifdef CONFIG_CUSTOM_WAKE_WORD
         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
-        commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
+        AddWakeCommands(CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY);
 #endif
     } else {
         models_ = models_list;

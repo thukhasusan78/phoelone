@@ -1,6 +1,6 @@
 # Phoe Lone Backend Specification
 
-This document is the **only** specification a separate agent needs to implement a complete XiaoZhi-compatible backend on a Digital Ocean VPS (Python/FastAPI or equivalent). It is derived from the ESP-IDF client in this repository (`otto-robot` / Phoe Lone). Do **not** invent extra device-side APIs. Do **not** generate backend code inside this firmware tree.
+This document is the XiaoZhi **wire protocol** (OTA, WebSocket, MCP, audio framing) derived from the ESP-IDF client (`otto-robot` / Phoe Lone). How **this** FastAPI repo actually runs (Silero VAD, Gemini Live, local music) is in [README.md](README.md). Do **not** invent extra device-side APIs.
 
 **Primary transport for Phoe Lone:** WebSocket (stock otto-robot). MQTT + UDP is optional and must still be implemented if the OTA JSON advertises it.
 
@@ -260,6 +260,8 @@ Every message except the first hello includes `session_id`.
 - `"realtime"` — full duplex / server AEC mode
 
 After `start`, the device streams binary Opus until `listen/stop`, abort, or `tts/start`.
+
+**This backend:** in `auto` / wake-word mode the ESP32 often never sends `listen/stop`. The server runs Silero VAD, ends the Gemini turn on silence (or `MAX_FORWARDED_AUDIO_SECONDS`), and sends `tts/start` so the device leaves listening.
 
 #### listen / stop
 
@@ -759,7 +761,7 @@ Minimum set so “nothing is left behind” versus a full XiaoZhi-style assistan
 |-------------|--------------|----------|
 | `search_weather` | `location` string, optional `date` | Query a weather API; summarize in the user’s language; TTS the forecast. Do **not** send this name to device MCP. |
 | `search_news` | `query` or `topic`, optional `count` | News API / RSS; speak headlines. |
-| `search_music` | `query`, optional `play` bool | Search catalog; describe result. True playback of music requires sending TTS **or** longer Opus (device is a voice bot, not a Spotify sink). Prefer describing/singing a short clip via TTS unless you stream extra audio. |
+| `search_music` | `query`, optional `play` bool | This backend auto-scans `data/local_music/` (`Artist - Title.mp3`). Generic “play a song” picks a random **local** file (no iTunes/YouTube). Named artist/title scores local first. After a short TTS announce, stream the **full** track as 24 kHz Opus on the TTS WebSocket (FFmpeg). Do not hum or invent lyrics. |
 | `search_web` / knowledge | `query` | Web or RAG search; cite briefly in speech. |
 | `send_email` | `to`, `subject`, `body` | Optional; original cloud MCP extension. |
 | smart-home / PC control | vendor-specific | Original cloud MCP; out of scope unless you add cloud MCP servers. |
@@ -779,7 +781,7 @@ Minimum set so “nothing is left behind” versus a full XiaoZhi-style assistan
 |------|--------|
 | Uplink | Opus, 16 kHz, mono, 60 ms |
 | Downlink | Opus, typically 24 kHz, mono, 60 ms |
-| STT | Stream or buffer Opus from `listen/start` until silence or `listen/stop` |
+| STT | Decode uplink Opus; this backend endpoints with server Silero VAD (device may not send `listen/stop`) then Gemini Live transcription |
 | TTS | After LLM text, send `tts/start`, binary Opus, `sentence_start` per sentence, `tts/stop` |
 | Barge-in | On new `listen/detect` or abort, stop TTS |
 | AEC | If `features.aec` is true, prefer `listen/start` `mode: realtime` and binary protocol v2 timestamps |
@@ -833,7 +835,7 @@ or a bare JSON-RPC object. MCP replies are broadcast to those clients. Do not co
 1. HTTP `GET`+`POST` `/xiaozhi/ota` and `/xiaozhi/ota/` returning the JSON in §2.3 with this VPS WebSocket URL.
 2. WebSocket `/xiaozhi/v1/` and `/xiaozhi/v1` accepting the headers in §3.1.
 3. Hello handshake §3.2–3.3.
-4. Parse listen/abort/mcp; decode Opus; ASR.
+4. Parse listen/abort/mcp; decode Opus; server VAD; Gemini Live STT.
 5. MCP initialize + tools/list + tools/call for **every** §5 tool you intend to use (at least otto action/stop + volume).
 6. LLM with **server** tools weather/news/music/knowledge.
 7. TTS cycle §3.6 + downlink Opus.

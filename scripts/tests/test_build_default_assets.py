@@ -37,6 +37,19 @@ class BuildDefaultAssetsTest(unittest.TestCase):
                     directory, None, "font_noto_sans_common_20_4.bin", None
                 )
 
+    def test_split_custom_wake_word_phrases(self):
+        self.assertEqual(
+            BUILD.split_custom_wake_word_phrases(
+                "phoe lone, poe lone, foe lone"
+            ),
+            ["phoe lone", "poe lone", "foe lone"],
+        )
+        self.assertEqual(
+            BUILD.split_custom_wake_word_phrases("xiao tu dou"),
+            ["xiao tu dou"],
+        )
+        self.assertEqual(BUILD.split_custom_wake_word_phrases(" , , "), [])
+
 
 if __name__ == "__main__":
     unittest.main()

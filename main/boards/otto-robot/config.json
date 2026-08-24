@@ -13,7 +13,7 @@
                 "CONFIG_CAMERA_OV2640=y",
                 "CONFIG_CAMERA_OV3660=y",
                 "CONFIG_LANGUAGE_EN_US=y",
-                "CONFIG_OTA_URL=\"http://206.189.94.197:8000/xiaozhi/ota/\""
+                "CONFIG_OTA_URL=\"https://phoelone.thukha.online/xiaozhi/ota/\""
             ]
         }
     ]

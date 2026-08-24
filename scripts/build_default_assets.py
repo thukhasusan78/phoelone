@@ -618,6 +618,13 @@ def read_custom_wake_word_from_sdkconfig(sdkconfig_path):
     return None
 
 
+def split_custom_wake_word_phrases(wake_word):
+    """Split comma-separated custom wake-word phrases, trimming whitespace."""
+    if not wake_word:
+        return []
+    return [part.strip() for part in wake_word.split(',') if part.strip()]
+
+
 def get_language_from_multinet_models(multinet_models):
     """
     Determine language from multinet model names
@@ -895,20 +902,25 @@ def main():
         # Determine language from multinet models
         language = get_language_from_multinet_models(multinet_model_names)
         
-        # Build multinet_model info structure
+        # Build multinet_model info structure. Comma-separated phrases become
+        # separate MultiNet commands that share the same display name.
+        phrases = split_custom_wake_word_phrases(custom_wake_word_config['wake_word'])
+        if not phrases:
+            phrases = [custom_wake_word_config['wake_word']]
         multinet_model_info = {
             "language": language,
             "duration": 3000,  # Default duration in ms
             "threshold": custom_wake_word_config['threshold'],
             "commands": [
                 {
-                    "command": custom_wake_word_config['wake_word'],
+                    "command": phrase,
                     "text": custom_wake_word_config['display'],
                     "action": "wake"
                 }
+                for phrase in phrases
             ]
         }
-        print(f"  custom wake word: {custom_wake_word_config['wake_word']} ({custom_wake_word_config['display']})")
+        print(f"  custom wake word: {', '.join(phrases)} ({custom_wake_word_config['display']})")
         print(f"  wake word language: {language}")
         print(f"  wake word threshold: {custom_wake_word_config['threshold']}")
     
