@@ -1,11 +1,11 @@
-# Phoe Lone Option B — post-flash hardware checklist
+# Mickey — post-flash hardware checklist
 
-Run only after `scripts/phoe_lone_flash.ps1` shows a stable boot log.
+Run only after `scripts/mickey_flash.ps1` shows a stable boot log.
 
 ## Before servos
 
 - [ ] No reset loop
-- [ ] Log: `自动检测硬件版本: 无摄像头版` (no-camera)
+- [ ] Log: `Forcing no-camera hardware config`
 - [ ] 16 MB flash / octal PSRAM reported
 - [ ] LCD backlight and image
 - [ ] Speaker / mic smoke test
@@ -20,8 +20,8 @@ Run only after `scripts/phoe_lone_flash.ps1` shows a stable boot log.
 
 ## Stop conditions
 
-- Log says **摄像头版** (camera version) — do not continue; wrong pin map
-- GPIO 12 must stay unwired (PCB ties LCD CS to GND)
+- Log says **camera** hardware map — do not continue; wrong pin map
+- GPIO 12 must stay display CS only (never a servo LEDC channel)
 
 ## Local backend (after bring-up)
 

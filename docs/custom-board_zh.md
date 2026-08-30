@@ -10,4 +10,4 @@ A XiaoZhi firmware build selects exactly one board. Board identity is a coupled 
 
 Never change an existing board's GPIO map to support different hardware. Add a uniquely named board or release variant; board identity affects OTA compatibility. Export exactly one board factory with `DECLARE_BOARD(...)`.
 
-Phoe Lone currently uses the stock `otto-robot` profile (`python scripts/build.py otto-robot --name otto-robot`). Do not put Phoe Lone GPIO changes into core modules. A future unique board would live under `main/boards/phoe-lone/` with its own `BOARD_TYPE`.
+Mickey currently uses the unique `mickey` board profile (`python scripts/build.py mickey --name mickey --language en-US`). Do not put Mickey GPIO changes into core modules. Board sources live under `main/boards/mickey/` with OTA `board.type` `mickey`.

@@ -1,10 +1,10 @@
-# Phoe Lone AI Robot Firmware Specification
+# Mickey AI Robot Firmware Specification
 
 ## 1. Purpose
 
-Phoe Lone is an ESP32-S3-based desktop AI robot inspired by the interaction style of LivingAI's EMO. It uses the open-source [XiaoZhi](https://github.com/78/xiaozhi-esp32) client as its voice, networking, display, and device-control foundation. This project is an independent implementation and must not copy proprietary LivingAI firmware, assets, branding, cloud APIs, or industrial design.
+Mickey is an ESP32-S3-based desktop AI robot inspired by the interaction style of LivingAI's EMO. It uses the open-source [XiaoZhi](https://github.com/78/xiaozhi-esp32) client as its voice, networking, display, and device-control foundation. This project is an independent implementation and must not copy proprietary LivingAI firmware, assets, branding, cloud APIs, or industrial design.
 
-This first firmware profile uses XiaoZhi's existing `otto-robot` board implementation because it already provides the closest available combination of voice interaction, animated expressions, camera support, and servo motion.
+This firmware profile uses the unique `mickey` board (`main/boards/mickey`), derived from XiaoZhi's Otto robot implementation, for voice interaction, animated expressions, and four-servo motion. Hand servos are disabled so GPIO 12 remains LCD CS.
 
 **Build system:** official ESP-IDF extension and `scripts/build.py`. PlatformIO is not used.
 
@@ -14,7 +14,7 @@ This first firmware profile uses XiaoZhi's existing `otto-robot` board implement
 - Module capacity: N16R8 (16 MB flash, 8 MB octal PSRAM)
 - Framework: ESP-IDF v6.0.2 (preferred; CI and `scripts/build.py` default)
 - Minimum declared IDF: `>=5.5.2` in `main/idf_component.yml`
-- Initial board implementation: `main/boards/otto-robot`
+- Initial board implementation: `main/boards/mickey`
 - Firmware language: English (`en-US`)
 - Flash / PSRAM defaults already match N16R8:
   - `sdkconfig.defaults`: 16 MB flash, custom partition `partitions/v2/16m.csv`
@@ -61,7 +61,7 @@ Servos and motors must use a suitable external power rail with a shared ground. 
 - IMU-based fall or pickup detection.
 - Battery gauge and low-voltage shutdown.
 - Charging/dock behavior.
-- Custom Phoe Lone expression assets.
+- Custom Mickey expression assets.
 - Idle personality animations and non-blocking behavior scheduling.
 - Local control page or application.
 
@@ -73,22 +73,22 @@ Servos and motors must use a suitable external power rail with a shared ground. 
 - `main/protocols/`: XiaoZhi WebSocket and MQTT/UDP transports.
 - `main/display/`: reusable display and expression support.
 - `main/mcp_server.*`: device-side MCP registration and dispatch.
-- `main/boards/otto-robot/`: current Phoe Lone hardware and movement baseline.
-- `main/boards/otto-robot/config.h`: current GPIO definitions.
+- `main/boards/mickey/`: current Mickey hardware and movement baseline.
+- `main/boards/mickey/config.h`: current GPIO definitions.
 - `scripts/build.py`: canonical board/variant build entry point.
-- `docs/custom-board.md`: how to add a unique `phoe-lone` board later.
+- `docs/custom-board.md`: how to add a unique `mickey` board later.
 
 Closest existing references for an EMO-like desk robot:
 
 | Reference | Why it matters |
 |-----------|----------------|
-| `main/boards/otto-robot` | Servo + GIF emoji + MCP action queue + WebSocket debug |
+| `main/boards/mickey` | Servo + GIF emoji + MCP action queue + WebSocket debug |
 | `main/boards/electron-bot` | Desktop robot with 6-DOF head/body/hand servos |
 | `main/boards/spotpear/sp-esp32-s3-1.54-muma` | Explicit N16R8 companion hardware profile |
 | `main/boards/movecall/moji-esp32s3` | Round 240×240 LVGL UI pattern |
 | `main/boards/espressif/esp-vocat` | EmoteDisplay animated expressions |
 
-Board-specific code must remain in a unique board directory. Before production or OTA use, copy the baseline into `main/boards/phoe-lone` and assign a unique `phoe-lone` board identity; do not ship using the `otto-robot` identity.
+Board-specific code lives in `main/boards/mickey` with OTA identity `mickey`. Do not ship using the `otto-robot` identity.
 
 ## 6. ESP-IDF Workflow
 
@@ -97,10 +97,10 @@ Use the official Espressif ESP-IDF VS Code / Cursor extension. Do not use Platfo
 1. Install **ESP-IDF v6.0.2** through the ESP-IDF extension (or a manual Espressif installer).
 2. Open this repository folder in Cursor or VS Code.
 3. Set the extension target to **esp32s3**.
-4. Source the ESP-IDF environment, then build the Otto baseline:
+4. Source the ESP-IDF environment, then build the Mickey board:
 
 ```powershell
-python scripts/build.py otto-robot --name otto-robot
+python scripts/build.py mickey --name mickey --language en-US
 ```
 
 Equivalent `idf.py` flow after the board/sdkconfig chain has been applied:
@@ -118,15 +118,15 @@ idf.py -p COMx flash monitor
 
 The first build downloads 50+ Component Manager dependencies into `managed_components/` and can take 30+ minutes on Windows.
 
-When Phoe Lone has its own board directory:
+When Mickey has its own board directory:
 
 ```powershell
-python scripts/build.py phoe-lone --name phoe-lone
+python scripts/build.py mickey --name mickey
 ```
 
 ## 7. Pin-Map Safety Gate
 
-The current profile inherits two Otto hardware variants from `main/boards/otto-robot/config.h`. Those GPIO values must be compared with the Phoe Lone schematic before peripherals are powered.
+The current profile uses the no-camera map in `main/boards/mickey/config.h`. GPIO 12 is LCD CS; hand pins are `GPIO_NUM_NC`.
 
 Camera-version Otto servo pins (starting profile only):
 
@@ -164,12 +164,12 @@ Existing Otto MCP tools to reuse or fork:
 - `self.otto.set_trim` / `self.otto.get_trims`
 - `self.otto.servo_sequences`
 
-A later `phoe-lone` board should use a unique tool namespace such as `self.phoe_lone.*`.
+A later `mickey` board should use a unique tool namespace such as `self.mickey.*`.
 
 ## 9. Comment and Language Policy
 
 - New and modified source-code comments use English.
-- Existing non-English comments in the selected robot board implementation (`main/boards/otto-robot`) are translated to English.
+- Existing non-English comments in the selected robot board implementation (`main/boards/mickey`) are translated to English.
 - Runtime user-facing text and protocol descriptions are not automatically changed because they affect AI behavior and localization.
 - Upstream boards, generated files, managed components, and third-party code remain unchanged.
 
@@ -200,7 +200,7 @@ A later `phoe-lone` board should use a unique tool namespace such as `self.phoe_
 ## 11. Current Constraints
 
 - Physical hardware cannot be validated from the N16R8 marking alone.
-- There is no `phoe-lone` board in this tree yet; the Otto board is a development baseline only.
+- The product board is `main/boards/mickey` with OTA identity `mickey`. Otto remains available as `otto-robot`.
 - The Otto implementation may not match the final robot mechanics, display, camera, audio circuit, or power design.
 - Myanmar is not currently one of the firmware's listed built-in interface locales; English is selected for this profile.
 - Windows builds work but are slower and more fragile than Linux; this is the official ESP-IDF path, not a PlatformIO wrapper.
@@ -213,7 +213,7 @@ Confirm display controller, audio codec, servo count/roles, battery ADC, and whe
 
 ### Phase 1 — Board skeleton
 
-Create `main/boards/phoe-lone/` (`config.h`, `config.json`, board class + `DECLARE_BOARD`, `README.md`), then wire `BOARD_TYPE_PHOE_LONE` in `main/Kconfig.projbuild` and `main/CMakeLists.txt`. Build with `python scripts/build.py phoe-lone --name phoe-lone`.
+Create `main/boards/mickey/` (`config.h`, `config.json`, board class + `DECLARE_BOARD`, `README.md`), then wire `BOARD_TYPE_MICKEY` in `main/Kconfig.projbuild` and `main/CMakeLists.txt`. Build with `python scripts/build.py mickey --name mickey`.
 
 ### Phase 2 — Display and personality
 
@@ -221,11 +221,11 @@ Choose LVGL emoji, Otto GIF pack, or EmoteDisplay. Map server emotion strings to
 
 ### Phase 3 — Audio and interaction
 
-Initialize the real codec/I2S pins, boot button / touch wake, wake-word model, and power-save timer.
+Initialize the real codec/I2S pins, boot button / touch wake, and power-save timer. Wake spotting uses AFE/WakeNet (`wn9_hiesp`, “Hi ESP”) plus MultiNet English phrases for **Mickey** / **Hey Mickey** / **Hi Mickey** and syllable variants for Burmese-accented speech.
 
 ### Phase 4 — Motion MCP
 
-Port the Otto/Electron background action-queue pattern under `self.phoe_lone.*`, with auto-home and `stop`.
+Port the Otto/Electron background action-queue pattern under `self.mickey.*`, with auto-home and `stop`.
 
 ### Phase 5 — Protocol and OTA
 

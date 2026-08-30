@@ -75,19 +75,19 @@ private:
 
         while (true) {
             if (xQueueReceive(controller->action_queue_, &params, pdMS_TO_TICKS(1000)) == pdTRUE) {
-                ESP_LOGI(TAG, "执行动作: %d", params.action_type);
+                ESP_LOGI(TAG, "Running action: %d", params.action_type);
                 PowerManager::PauseBatteryUpdate();  // Pause battery ADC while a motion runs
                 controller->is_action_in_progress_ = true;
                 if (params.action_type == ACTION_SERVO_SEQUENCE) {
                     // Run a user-programmed servo sequence; short JSON keys only
                     cJSON* json = cJSON_Parse(params.servo_sequence_json);
                     if (json != nullptr) {
-                        ESP_LOGD(TAG, "JSON解析成功，长度=%d", strlen(params.servo_sequence_json));
+                        ESP_LOGD(TAG, "Parsed sequence JSON, length=%d", strlen(params.servo_sequence_json));
                         // Short key "a" is the action array
                         cJSON* actions = cJSON_GetObjectItem(json, "a");
                         if (cJSON_IsArray(actions)) {
                             int array_size = cJSON_GetArraySize(actions);
-                            ESP_LOGI(TAG, "执行舵机序列，共%d个动作", array_size);
+                            ESP_LOGI(TAG, "Running servo sequence with %d actions", array_size);
                             
                             // Delay after the sequence finishes (short key "d", top-level)
                             int sequence_delay = 0;
@@ -107,6 +107,10 @@ private:
                             current_positions[RIGHT_HAND] = 180 - 45;
                             
                             for (int i = 0; i < array_size; i++) {
+                                if (controller->otto_.IsStopRequested()) {
+                                    ESP_LOGI(TAG, "Servo sequence aborted by stop request");
+                                    break;
+                                }
                                 cJSON* action_item = cJSON_GetArrayItem(actions, i);
                                 if (cJSON_IsObject(action_item)) {
                                     // Oscillator mode if short key "osc" is present
@@ -163,11 +167,11 @@ private:
                                         bool right_foot_large = amplitude[RIGHT_FOOT] >= LARGE_AMPLITUDE_THRESHOLD;
                                         
                                         if (left_leg_large && right_leg_large) {
-                                            ESP_LOGW(TAG, "检测到左右腿同时大幅度振荡，限制右腿振幅");
+                                            ESP_LOGW(TAG, "Both legs oscillating with large amplitude; limiting right-leg amplitude");
                                             amplitude[RIGHT_LEG] = 0;  // Disable right-leg oscillation
                                         }
                                         if (left_foot_large && right_foot_large) {
-                                            ESP_LOGW(TAG, "检测到左右脚同时大幅度振荡，限制右脚振幅");
+                                            ESP_LOGW(TAG, "Both feet oscillating with large amplitude; limiting right-foot amplitude");
                                             amplitude[RIGHT_FOOT] = 0;  // Disable right-foot oscillation
                                         }
                                         
@@ -200,7 +204,7 @@ private:
                                         }
                                         
                                         // Oscillate via Execute2 around absolute center angles
-                                        ESP_LOGI(TAG, "执行振荡动作%d: period=%d, steps=%.1f", i, period, steps);
+                                        ESP_LOGI(TAG, "Running oscillator action %d: period=%d, steps=%.1f", i, period, steps);
                                         controller->otto_.Execute2(amplitude, center_angle, period, phase_diff, steps);
                                         
                                         // After oscillation, treat center_angle as the current pose
@@ -243,7 +247,7 @@ private:
                                         }
                                         
                                         // Move servos to the target pose
-                                        ESP_LOGI(TAG, "执行动作%d: ll=%d, rl=%d, lf=%d, rf=%d, v=%d",
+                                        ESP_LOGI(TAG, "Running action %d: ll=%d, rl=%d, lf=%d, rf=%d, v=%d",
                                                  i, servo_target[LEFT_LEG], servo_target[RIGHT_LEG],
                                                  servo_target[LEFT_FOOT], servo_target[RIGHT_FOOT], speed);
                                         controller->otto_.MoveServos(speed, servo_target);
@@ -264,7 +268,7 @@ private:
                                     
                                     // Inter-action delay (skipped after the last action)
                                     if (delay_after > 0 && i < array_size - 1) {
-                                        ESP_LOGI(TAG, "动作%d执行完成，延迟%d毫秒", i, delay_after);
+                                        ESP_LOGI(TAG, "Action %d finished, delaying %d ms", i, delay_after);
                                         vTaskDelay(pdMS_TO_TICKS(delay_after));
                                     }
                                 }
@@ -275,7 +279,7 @@ private:
                                 // Only delay if another sequence is already queued
                                 UBaseType_t queue_count = uxQueueMessagesWaiting(controller->action_queue_);
                                 if (queue_count > 0) {
-                                    ESP_LOGI(TAG, "序列执行完成，延迟%d毫秒后执行下一个序列（队列中还有%d个序列）", 
+                                    ESP_LOGI(TAG, "Sequence finished; delaying %d ms before next sequence (%d still queued)", 
                                              sequence_delay, queue_count);
                                     vTaskDelay(pdMS_TO_TICKS(sequence_delay));
                                 }
@@ -283,16 +287,16 @@ private:
                             // Free the parsed JSON tree
                             cJSON_Delete(json);
                         } else {
-                            ESP_LOGE(TAG, "舵机序列格式错误: 'a'不是数组");
+                            ESP_LOGE(TAG, "Invalid servo sequence: 'a' is not an array");
                             cJSON_Delete(json);
                         }
                     } else {
                         // Capture cJSON parse error location
                         const char* error_ptr = cJSON_GetErrorPtr();
                         int json_len = strlen(params.servo_sequence_json);
-                        ESP_LOGE(TAG, "解析舵机序列JSON失败，长度=%d，错误位置: %s", json_len, 
-                                 error_ptr ? error_ptr : "未知");
-                        ESP_LOGE(TAG, "JSON内容: %s", params.servo_sequence_json);
+                        ESP_LOGE(TAG, "Failed to parse servo sequence JSON, length=%d, error at: %s", json_len,
+                                 error_ptr ? error_ptr : "unknown");
+                        ESP_LOGE(TAG, "JSON content: %s", params.servo_sequence_json);
                     }
                 } else {
                     // Run a predefined motion
@@ -401,6 +405,7 @@ private:
                             }
                             break;
                         case ACTION_HOME:
+                            controller->otto_.ClearStop();
                             controller->otto_.Home(true);
                             break;
                     }
@@ -408,8 +413,8 @@ private:
                         if (params.action_type != ACTION_HOME && params.action_type != ACTION_SERVO_SEQUENCE) {
                             UBaseType_t pending_actions =
                                 uxQueueMessagesWaiting(controller->action_queue_);
-                            // Skip Home if more motions are queued to avoid a hard stop then restart
-                            if (pending_actions == 0) {
+                            // Skip Home if more motions are queued or a cooperative stop is in progress
+                            if (pending_actions == 0 && !controller->otto_.IsStopRequested()) {
                                 controller->otto_.Home(params.action_type != ACTION_HANDS_UP);
                             }
                         }
@@ -437,12 +442,12 @@ private:
             (action_type == ACTION_SHY) || (action_type == ACTION_RADIO_CALISTHENICS) ||
             (action_type == ACTION_MAGIC_CIRCLE)) {
             if (!has_hands_) {
-                ESP_LOGW(TAG, "尝试执行手部动作，但机器人没有配置手部舵机");
+                ESP_LOGW(TAG, "Hand action requested but no hand servos are configured");
                 return;
             }
         }
 
-        ESP_LOGI(TAG, "动作控制: 类型=%d, 步数=%d, 速度=%d, 方向=%d, 幅度=%d", action_type, steps,
+        ESP_LOGI(TAG, "Action control: type=%d, steps=%d, speed=%d, direction=%d, amount=%d", action_type, steps,
                  speed, direction, amount);
 
         OttoActionParams params = {action_type, steps, speed, direction, amount, ""};
@@ -452,21 +457,21 @@ private:
 
     void QueueServoSequence(const char* servo_sequence_json) {
         if (servo_sequence_json == nullptr) {
-            ESP_LOGE(TAG, "序列JSON为空");
+            ESP_LOGE(TAG, "Sequence JSON is null");
             return;
         }
         
         int input_len = strlen(servo_sequence_json);
         const int buffer_size = 512;  // Size of servo_sequence_json
-        ESP_LOGI(TAG, "队列舵机序列，输入长度=%d，缓冲区大小=%d", input_len, buffer_size);
+        ESP_LOGI(TAG, "Queue servo sequence, input length=%d, buffer size=%d", input_len, buffer_size);
         
         if (input_len >= buffer_size) {
-            ESP_LOGE(TAG, "JSON字符串太长！输入长度=%d，最大允许=%d", input_len, buffer_size - 1);
+            ESP_LOGE(TAG, "JSON string too long: input length=%d, max allowed=%d", input_len, buffer_size - 1);
             return;
         }
         
         if (input_len == 0) {
-            ESP_LOGW(TAG, "序列JSON为空字符串");
+            ESP_LOGW(TAG, "Sequence JSON is an empty string");
             return;
         }
         
@@ -475,7 +480,7 @@ private:
         strncpy(params.servo_sequence_json, servo_sequence_json, sizeof(params.servo_sequence_json) - 1);
         params.servo_sequence_json[sizeof(params.servo_sequence_json) - 1] = '\0';
         
-        ESP_LOGD(TAG, "序列已加入队列: %s", params.servo_sequence_json);
+        ESP_LOGD(TAG, "Sequence queued: %s", params.servo_sequence_json);
         
         xQueueSend(action_queue_, &params, portMAX_DELAY);
         StartActionTaskIfNeeded();
@@ -491,7 +496,7 @@ private:
         int left_hand = settings.GetInt("left_hand", 0);
         int right_hand = settings.GetInt("right_hand", 0);
 
-        ESP_LOGI(TAG, "从NVS加载微调设置: 左腿=%d, 右腿=%d, 左脚=%d, 右脚=%d, 左手=%d, 右手=%d",
+        ESP_LOGI(TAG, "Loaded trims from NVS: left_leg=%d, right_leg=%d, left_foot=%d, right_foot=%d, left_hand=%d, right_hand=%d",
                  left_leg, right_leg, left_foot, right_foot, left_hand, right_hand);
 
         otto_.SetTrims(left_leg, right_leg, left_foot, right_foot, left_hand, right_hand);
@@ -509,8 +514,8 @@ public:
         );
 
         has_hands_ = (hw_config.left_hand_pin != GPIO_NUM_NC && hw_config.right_hand_pin != GPIO_NUM_NC);
-        ESP_LOGI(TAG, "Otto机器人初始化%s手部舵机", has_hands_ ? "带" : "不带");
-        ESP_LOGI(TAG, "舵机引脚配置: LL=%d, RL=%d, LF=%d, RF=%d, LH=%d, RH=%d",
+        ESP_LOGI(TAG, "Otto initialized %s hand servos", has_hands_ ? "with" : "without");
+        ESP_LOGI(TAG, "Servo pins: LL=%d, RL=%d, LF=%d, RF=%d, LH=%d, RH=%d",
                  hw_config.left_leg_pin, hw_config.right_leg_pin,
                  hw_config.left_foot_pin, hw_config.right_foot_pin,
                  hw_config.left_hand_pin, hw_config.right_hand_pin);
@@ -527,19 +532,22 @@ public:
     void RegisterMcpTools() {
         auto& mcp_server = McpServer::GetInstance();
 
-        ESP_LOGI(TAG, "开始注册MCP工具...");
+        ESP_LOGI(TAG, "Registering MCP tools...");
 
         // Unified motion tool (all motions except servo sequences)
         mcp_server.AddTool("self.otto.action",
-                           "执行机器人动作。action: 动作名称；根据动作类型提供相应参数：direction: 方向，1=前进/左转，-1=后退/右转；0=左右同时"
-                           "steps: 动作步数，1-100；speed: 动作速度，100-3000，数值越小越快；amount: 动作幅度，0-170；arm_swing: 手臂摆动幅度，0-170；"
-                           "基础动作：walk(行走，需steps/speed/direction/arm_swing)、turn(转身，需steps/speed/direction/arm_swing)、jump(跳跃，需steps/speed)、"
-                           "swing(摇摆，需steps/speed/amount)、moonwalk(太空步，需steps/speed/direction/amount)、bend(弯曲，需steps/speed/direction)、"
-                           "shake_leg(摇腿，需steps/speed/direction)、updown(上下运动，需steps/speed/amount)、whirlwind_leg(旋风腿，需steps/speed/amount)；"
-                           "固定动作：sit(坐下)、showcase(展示动作)、home(复位)；"
-                           "手部动作(需手部舵机)：hands_up(举手，需speed/direction)、hands_down(放手，需speed/direction)、hand_wave(挥手，需direction)、"
-                           "windmill(大风车，需steps/speed/amount)、takeoff(起飞，需steps/speed/amount)、fitness(健身，需steps/speed/amount)、"
-                           "greeting(打招呼，需direction/steps)、shy(害羞，需direction/steps)、radio_calisthenics(广播体操)、magic_circle(爱的魔力转圈圈)",
+                           "Run a robot motion. action: motion name. Parameters depend on the motion: "
+                           "direction 1=forward/left, -1=back/right, 0=both sides; "
+                           "steps 1-100; speed 100-3000 (smaller is faster); amount 0-170; arm_swing 0-170. "
+                           "Basic: walk (steps/speed/direction/arm_swing), turn (steps/speed/direction/arm_swing), "
+                           "jump (steps/speed), swing (steps/speed/amount), moonwalk (steps/speed/direction/amount), "
+                           "bend (steps/speed/direction), shake_leg (steps/speed/direction), "
+                           "updown (steps/speed/amount), whirlwind_leg (steps/speed/amount). "
+                           "Poses: sit, showcase, home. "
+                           "Hand motions (require hand servos): hands_up (speed/direction), hands_down (speed/direction), "
+                           "hand_wave (direction), windmill (steps/speed/amount), takeoff (steps/speed/amount), "
+                           "fitness (steps/speed/amount), greeting (direction/steps), shy (direction/steps), "
+                           "radio_calisthenics, magic_circle.",
                            PropertyList({
                                Property("action", kPropertyTypeString, "sit"),
                                Property("steps", kPropertyTypeInteger, 3, 1, 100),
@@ -600,66 +608,66 @@ public:
                                // Hand motions
                                else if (action == "hands_up") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_HANDS_UP, 1, speed, direction, 0);
                                    return true;
                                } else if (action == "hands_down") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_HANDS_DOWN, 1, speed, direction, 0);
                                    return true;
                                } else if (action == "hand_wave") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_HAND_WAVE, 1, 0, 0, direction);
                                    return true;
                                } else if (action == "windmill") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_WINDMILL, steps, speed, 0, amount);
                                    return true;
                                } else if (action == "takeoff") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_TAKEOFF, steps, speed, 0, amount);
                                    return true;
                                } else if (action == "fitness") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_FITNESS, steps, speed, 0, amount);
                                    return true;
                                } else if (action == "greeting") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_GREETING, steps, 0, direction, 0);
                                    return true;
                                } else if (action == "shy") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_SHY, steps, 0, direction, 0);
                                    return true;
                                } else if (action == "radio_calisthenics") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_RADIO_CALISTHENICS, 1, 0, 0, 0);
                                    return true;
                                } else if (action == "magic_circle") {
                                    if (!has_hands_) {
-                                       return "错误：此动作需要手部舵机支持";
+                                       return "Error: this action requires hand servos";
                                    }
                                    QueueAction(ACTION_MAGIC_CIRCLE, 1, 0, 0, 0);
                                    return true;
                                } else {
-                                   return "错误：无效的动作名称。可用动作：walk, turn, jump, swing, moonwalk, bend, shake_leg, updown, whirlwind_leg, sit, showcase, home, hands_up, hands_down, hand_wave, windmill, takeoff, fitness, greeting, shy, radio_calisthenics, magic_circle";
+                                   return "Error: invalid action name. Available: walk, turn, jump, swing, moonwalk, bend, shake_leg, updown, whirlwind_leg, sit, showcase, home, hands_up, hands_down, hand_wave, windmill, takeoff, fitness, greeting, shy, radio_calisthenics, magic_circle";
                                }
                            });
 
@@ -667,33 +675,37 @@ public:
         // Servo-sequence tool (chunked send; each call queues one sequence)
         mcp_server.AddTool(
             "self.otto.servo_sequences",
-            "AI自定义动作编程（即兴动作）。支持分段发送序列：超过5个序列建议AI可以连续多次调用此工具，每次发送一个短序列，系统会自动排队按顺序执行。支持普通移动和振荡器两种模式。"
-            "机器人结构：双手可上下摆动，双腿可内收外展，双脚可上下翻转。"
-            "舵机说明："
-            "ll(左腿)：内收外展，0度=完全外展，90度=中立，180度=完全内收；"
-            "rl(右腿)：内收外展，0度=完全内收，90度=中立，180度=完全外展；"
-            "lf(左脚)：上下翻转，0度=完全向上，90度=水平，180度=完全向下；"
-            "rf(右脚)：上下翻转，0度=完全向下，90度=水平，180度=完全向上；"
-            "lh(左手)：上下摆动，0度=完全向下，90度=水平，180度=完全向上；"
-            "rh(右手)：上下摆动，0度=完全向上，90度=水平，180度=完全向下；"
-            "sequence: 单个序列对象，包含'a'动作数组，顶层可选参数："
-            "'d'(序列执行完成后延迟毫秒数，用于序列之间的停顿)。"
-            "每个动作对象包含："
-            "普通模式：'s'舵机位置对象(键名：ll/rl/lf/rf/lh/rh，值：0-180度)，'v'移动速度100-3000毫秒(默认1000)，'d'动作后延迟毫秒数(默认0)；"
-            "振荡模式：'osc'振荡器对象，包含'a'振幅对象(各舵机振幅10-90度，默认20度)，'o'中心角度对象(各舵机振荡中心绝对角度0-180度，默认90度)，'ph'相位差对象(各舵机相位差，度，0-360度，默认0度)，'p'周期100-3000毫秒(默认500)，'c'周期数0.1-20.0(默认5.0)；"
-            "使用方式：AI可以连续多次调用此工具，每次发送一个序列，系统会自动排队按顺序执行。"
-            "重要说明：左右腿脚震荡的时候，有一只脚必须在90度，否则会损坏机器人，如果发送多个序列（序列数>1），完成所有序列后需要复位时，AI应该最后单独调用self.otto.home工具进行复位，不要在序列中设置复位参数。"
-            "普通模式示例：发送3个序列，最后调用复位："
-            "第1次调用{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":100},\\\"v\\\":1000}],\\\"d\\\":500}\"}，"
-            "第2次调用{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":90},\\\"v\\\":800}],\\\"d\\\":500}\"}，"
-            "第3次调用{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":80},\\\"v\\\":800}]}\"}，"
-            "最后调用self.otto.home工具进行复位。"
-            "振荡器模式示例："
-            "示例1-双臂同步摆动：{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"lh\\\":30,\\\"rh\\\":30},\\\"o\\\":{\\\"lh\\\":90,\\\"rh\\\":-90},\\\"p\\\":500,\\\"c\\\":5.0}}],\\\"d\\\":0}\"}；"
-            "示例2-双腿交替振荡（波浪效果）：{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":20,\\\"rl\\\":20},\\\"o\\\":{\\\"ll\\\":90,\\\"rl\\\":-90},\\\"ph\\\":{\\\"rl\\\":180},\\\"p\\\":600,\\\"c\\\":3.0}}],\\\"d\\\":0}\"}；"
-            "示例3-单腿振荡配合固定脚（安全）：{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":45},\\\"o\\\":{\\\"ll\\\":90,\\\"lf\\\":90},\\\"p\\\":400,\\\"c\\\":4.0}}],\\\"d\\\":0}\"}；"
-            "示例4-复杂多舵机振荡（手和腿）：{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"lh\\\":25,\\\"rh\\\":25,\\\"ll\\\":15},\\\"o\\\":{\\\"lh\\\":90,\\\"rh\\\":90,\\\"ll\\\":90,\\\"lf\\\":90},\\\"ph\\\":{\\\"rh\\\":180},\\\"p\\\":800,\\\"c\\\":6.0}}],\\\"d\\\":500}\"}；"
-            "示例5-快速摇摆：{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":30,\\\"rl\\\":30},\\\"o\\\":{\\\"ll\\\":90,\\\"rl\\\":90},\\\"ph\\\":{\\\"rl\\\":180},\\\"p\\\":300,\\\"c\\\":10.0}}],\\\"d\\\":0}\"}。",
+            "AI-authored servo programming. Send sequences in chunks: for more than 5 sequences, "
+            "call this tool repeatedly with one short sequence each time; they queue in order. "
+            "Supports move mode and oscillator mode. "
+            "Robot: hands swing up/down, legs abduct/adduct, feet pitch up/down. "
+            "Servos: "
+            "ll (left leg) abduct/adduct, 0=fully out, 90=neutral, 180=fully in; "
+            "rl (right leg) abduct/adduct, 0=fully in, 90=neutral, 180=fully out; "
+            "lf (left foot) pitch, 0=fully up, 90=level, 180=fully down; "
+            "rf (right foot) pitch, 0=fully down, 90=level, 180=fully up; "
+            "lh (left hand) swing, 0=fully down, 90=level, 180=fully up; "
+            "rh (right hand) swing, 0=fully up, 90=level, 180=fully down. "
+            "sequence: one sequence object with action array 'a' and optional top-level "
+            "'d' (delay in ms after the sequence, used as a pause between sequences). "
+            "Each action: "
+            "move mode: 's' servo map (ll/rl/lf/rf/lh/rh, 0-180 deg), 'v' duration 100-3000 ms (default 1000), "
+            "'d' post-action delay ms (default 0); "
+            "oscillator mode: 'osc' with 'a' amplitudes 10-90 deg (default 20), 'o' center angles 0-180 "
+            "(default 90), 'ph' phase offsets 0-360 deg (default 0), 'p' period 100-3000 ms (default 500), "
+            "'c' cycle count 0.1-20.0 (default 5.0). "
+            "Safety: when both legs or both feet oscillate, one foot must stay at 90 deg or the robot can be damaged. "
+            "After multiple sequences, call self.otto.home separately; do not encode home inside the sequence. "
+            "Move-mode example, three calls then home: "
+            "{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":100},\\\"v\\\":1000}],\\\"d\\\":500}\"}, "
+            "{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":90},\\\"v\\\":800}],\\\"d\\\":500}\"}, "
+            "{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":80},\\\"v\\\":800}]}\"}, then self.otto.home. "
+            "Oscillator examples: "
+            "sync arms: {\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"lh\\\":30,\\\"rh\\\":30},\\\"o\\\":{\\\"lh\\\":90,\\\"rh\\\":-90},\\\"p\\\":500,\\\"c\\\":5.0}}],\\\"d\\\":0}\"}; "
+            "alternating legs: {\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":20,\\\"rl\\\":20},\\\"o\\\":{\\\"ll\\\":90,\\\"rl\\\":-90},\\\"ph\\\":{\\\"rl\\\":180},\\\"p\\\":600,\\\"c\\\":3.0}}],\\\"d\\\":0}\"}; "
+            "single-leg with fixed foot: {\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":45},\\\"o\\\":{\\\"ll\\\":90,\\\"lf\\\":90},\\\"p\\\":400,\\\"c\\\":4.0}}],\\\"d\\\":0}\"}; "
+            "hands and legs: {\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"lh\\\":25,\\\"rh\\\":25,\\\"ll\\\":15},\\\"o\\\":{\\\"lh\\\":90,\\\"rh\\\":90,\\\"ll\\\":90,\\\"lf\\\":90},\\\"ph\\\":{\\\"rh\\\":180},\\\"p\\\":800,\\\"c\\\":6.0}}],\\\"d\\\":500}\"}; "
+            "fast sway: {\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":30,\\\"rl\\\":30},\\\"o\\\":{\\\"ll\\\":90,\\\"rl\\\":90},\\\"ph\\\":{\\\"rl\\\":180},\\\"p\\\":300,\\\"c\\\":10.0}}],\\\"d\\\":0}\"}.",
             PropertyList({Property("sequence", kPropertyTypeString,
                                    "{\"a\":[{\"s\":{\"ll\":90,\"rl\":90},\"v\":1000}]}")}),
             [this](const PropertyList& properties) -> ReturnValue {
@@ -704,32 +716,28 @@ public:
             });
 
 
-        mcp_server.AddTool("self.otto.stop", "立即停止所有动作并复位", PropertyList(),
+        mcp_server.AddTool("self.otto.stop", "Stop all motion immediately and return to the rest pose", PropertyList(),
                            [this](const PropertyList& properties) -> ReturnValue {
-                               if (action_task_handle_ != nullptr) {
-                                   vTaskDelete(action_task_handle_);
-                                   action_task_handle_ = nullptr;
-                               }
+                               otto_.RequestStop();
                                is_action_in_progress_ = false;
-                               PowerManager::ResumeBatteryUpdate();  // Resume battery ADC after stop
+                               PowerManager::ResumeBatteryUpdate();
                                xQueueReset(action_queue_);
-
                                QueueAction(ACTION_HOME, 1, 1000, 1, 0);
                                return true;
                            });
 
         mcp_server.AddTool(
             "self.otto.set_trim",
-            "校准单个舵机位置。设置指定舵机的微调参数以调整机器人的初始站立姿态，设置将永久保存。"
-            "servo_type: 舵机类型(left_leg/right_leg/left_foot/right_foot/left_hand/right_hand); "
-            "trim_value: 微调值(-50到50度)",
+            "Calibrate one servo. Sets a trim used for the standing rest pose; the value is saved in NVS. "
+            "servo_type: left_leg/right_leg/left_foot/right_foot/left_hand/right_hand; "
+            "trim_value: offset in degrees (-50 to 50)",
             PropertyList({Property("servo_type", kPropertyTypeString, "left_leg"),
                           Property("trim_value", kPropertyTypeInteger, 0, -50, 50)}),
             [this](const PropertyList& properties) -> ReturnValue {
                 std::string servo_type = properties["servo_type"].value<std::string>();
                 int trim_value = properties["trim_value"].value<int>();
 
-                ESP_LOGI(TAG, "设置舵机微调: %s = %d度", servo_type.c_str(), trim_value);
+                ESP_LOGI(TAG, "Set servo trim: %s = %d deg", servo_type.c_str(), trim_value);
 
                 // Load current trim values
                 Settings settings("otto_trims", true);
@@ -755,30 +763,30 @@ public:
                     settings.SetInt("right_foot", right_foot);
                 } else if (servo_type == "left_hand") {
                     if (!has_hands_) {
-                        return "错误：机器人没有配置手部舵机";
+                        return "Error: this robot has no hand servos";
                     }
                     left_hand = trim_value;
                     settings.SetInt("left_hand", left_hand);
                 } else if (servo_type == "right_hand") {
                     if (!has_hands_) {
-                        return "错误：机器人没有配置手部舵机";
+                        return "Error: this robot has no hand servos";
                     }
                     right_hand = trim_value;
                     settings.SetInt("right_hand", right_hand);
                 } else {
-                    return "错误：无效的舵机类型，请使用: left_leg, right_leg, left_foot, "
-                           "right_foot, left_hand, right_hand";
+                    return "Error: invalid servo type. Use left_leg, right_leg, left_foot, "
+                           "right_foot, left_hand, or right_hand";
                 }
 
                 otto_.SetTrims(left_leg, right_leg, left_foot, right_foot, left_hand, right_hand);
 
                 QueueAction(ACTION_JUMP, 1, 500, 0, 0);
 
-                return "舵机 " + servo_type + " 微调设置为 " + std::to_string(trim_value) +
-                       " 度，已永久保存";
+                return "Servo " + servo_type + " trim set to " + std::to_string(trim_value) +
+                       " deg and saved";
             });
 
-        mcp_server.AddTool("self.otto.get_trims", "获取当前的舵机微调设置", PropertyList(),
+        mcp_server.AddTool("self.otto.get_trims", "Return the current servo trim values", PropertyList(),
                            [this](const PropertyList& properties) -> ReturnValue {
                                Settings settings("otto_trims", false);
 
@@ -797,16 +805,16 @@ public:
                                    ",\"left_hand\":" + std::to_string(left_hand) +
                                    ",\"right_hand\":" + std::to_string(right_hand) + "}";
 
-                               ESP_LOGI(TAG, "获取微调设置: %s", result.c_str());
+                               ESP_LOGI(TAG, "Current trims: %s", result.c_str());
                                return result;
                            });
 
-        mcp_server.AddTool("self.otto.get_status", "获取机器人状态，返回 moving 或 idle",
+        mcp_server.AddTool("self.otto.get_status", "Return robot motion state: moving or idle",
                            PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
                                return is_action_in_progress_ ? "moving" : "idle";
                            });
 
-        mcp_server.AddTool("self.battery.get_level", "获取机器人电池电量和充电状态", PropertyList(),
+        mcp_server.AddTool("self.battery.get_level", "Return battery level and charging state", PropertyList(),
                            [](const PropertyList& properties) -> ReturnValue {
                                auto& board = Board::GetInstance();
                                int level = 0;
@@ -820,7 +828,7 @@ public:
                                return status;
                            });
                            
-        mcp_server.AddTool("self.otto.get_ip", "获取机器人WiFi IP地址", PropertyList(),
+        mcp_server.AddTool("self.otto.get_ip", "Return the robot Wi-Fi IP address", PropertyList(),
                            [](const PropertyList& properties) -> ReturnValue {
                                auto& wifi = WifiManager::GetInstance();
                                std::string ip = wifi.GetIpAddress();
@@ -840,7 +848,7 @@ public:
             PropertyList(),
             [](const PropertyList& properties) -> ReturnValue {
                 return "{\"wired\":false,\"sensor\":\"MPU6050\","
-                       "\"reason\":\"I2C pins are GPIO_NUM_NC on otto-robot no-camera\"}";
+                       "\"reason\":\"I2C pins are GPIO_NUM_NC on mickey no-camera\"}";
             });
         mcp_server.AddTool(
             "self.mickey.light.get_level",
@@ -848,7 +856,7 @@ public:
             PropertyList(),
             [](const PropertyList& properties) -> ReturnValue {
                 return "{\"wired\":false,\"sensor\":\"light\","
-                       "\"reason\":\"no light-sensor GPIO in stock otto-robot config\"}";
+                       "\"reason\":\"no light-sensor GPIO in mickey config\"}";
             });
         mcp_server.AddTool(
             "self.mickey.touch.get_state",
@@ -856,10 +864,43 @@ public:
             PropertyList(),
             [](const PropertyList& properties) -> ReturnValue {
                 return "{\"wired\":false,\"sensor\":\"touch\","
-                       "\"reason\":\"no touch GPIO in stock otto-robot config\"}";
+                       "\"reason\":\"no touch GPIO in mickey config\"}";
             });
 
-        ESP_LOGI(TAG, "MCP工具注册完成");
+        ESP_LOGI(TAG, "MCP tools registered");
+    }
+
+    // Home, wait for the queue to drain, then stop PWM. No load-switch GPIO.
+    void PrepareForSleep() {
+        ESP_LOGI(TAG, "Preparing servos for deep sleep");
+        otto_.RequestStop();
+        is_action_in_progress_ = false;
+        PowerManager::ResumeBatteryUpdate();
+        xQueueReset(action_queue_);
+        QueueAction(ACTION_HOME, 1, 1000, 1, 0);
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+        const int timeout_ms = 4000;
+        int waited = 0;
+        while (waited < timeout_ms) {
+            if (!is_action_in_progress_ && uxQueueMessagesWaiting(action_queue_) == 0) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(50));
+            waited += 50;
+        }
+        if (waited >= timeout_ms) {
+            ESP_LOGW(TAG, "Timed out waiting for home before detach");
+        }
+
+        otto_.DetachServos();
+        ESP_LOGI(TAG, "Servos detached (PWM off)");
+    }
+
+    // Greeting needs hand servos; this SKU uses jump as the morning stretch.
+    void QueueMorningWake() {
+        ESP_LOGI(TAG, "Queueing morning stretch");
+        QueueAction(ACTION_JUMP, 1, 800, 0, 0);
     }
 
     ~OttoController() {
@@ -876,6 +917,18 @@ static OttoController* g_otto_controller = nullptr;
 void InitializeOttoController(const HardwareConfig& hw_config) {
     if (g_otto_controller == nullptr) {
         g_otto_controller = new OttoController(hw_config);
-        ESP_LOGI(TAG, "Otto控制器已初始化并注册MCP工具");
+        ESP_LOGI(TAG, "Otto controller initialized and MCP tools registered");
+    }
+}
+
+void OttoPrepareForSleep() {
+    if (g_otto_controller != nullptr) {
+        g_otto_controller->PrepareForSleep();
+    }
+}
+
+void OttoQueueMorningWake() {
+    if (g_otto_controller != nullptr) {
+        g_otto_controller->QueueMorningWake();
     }
 }

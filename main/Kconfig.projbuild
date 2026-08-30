@@ -396,6 +396,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_AI_VOX3
         bool "NullLab AI Vox V3"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_MICKEY
+        bool "Mickey"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_OTTO_ROBOT
         bool "Otto Robot"
         depends on IDF_TARGET_ESP32S3
@@ -888,20 +891,23 @@ choice WAKE_WORD_TYPE
         help
             Support AEC if available, requires ESP32-S3, ESP32-P4, or ESP32-S31 and PSRAM
 
-    config USE_CUSTOM_WAKE_WORD
-        bool "Multinet model (Custom Wake Word)"
-        depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4 || IDF_TARGET_ESP32S31) && SPIRAM
-        help
-            Requires ESP32-S3, ESP32-P4, or ESP32-S31 and PSRAM
-
 endchoice
+
+config USE_CUSTOM_WAKE_WORD
+    bool "Multinet custom phrases (alongside WakeNet)"
+    depends on (IDF_TARGET_ESP32S3 || IDF_TARGET_ESP32P4 || IDF_TARGET_ESP32S31) && SPIRAM
+    help
+        Enable MultiNet custom phrases. On ESP32-S3 this runs through AFE.
+        When AFE WakeNet is also enabled, WakeNet remains the always-on
+        keyword spotter and MultiNet adds extra English/Chinese phrases.
 
 config CUSTOM_WAKE_WORD
     string "Custom Wake Word"
     default "xiao tu dou"
     depends on USE_CUSTOM_WAKE_WORD
     help
-        Custom Wake Word, use pinyin for Chinese, separated by spaces
+        Custom phrases for MultiNet. Use English words or syllable groups
+        (e.g. "mickey, hey mickey, mick ee") or pinyin for Chinese.
 
 config CUSTOM_WAKE_WORD_DISPLAY
     string "Custom Wake Word Display"

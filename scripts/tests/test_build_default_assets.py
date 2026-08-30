@@ -40,9 +40,9 @@ class BuildDefaultAssetsTest(unittest.TestCase):
     def test_split_custom_wake_word_phrases(self):
         self.assertEqual(
             BUILD.split_custom_wake_word_phrases(
-                "phoe lone, poe lone, foe lone"
+                "mickey, hey mickey, hi mickey"
             ),
-            ["phoe lone", "poe lone", "foe lone"],
+            ["mickey", "hey mickey", "hi mickey"],
         )
         self.assertEqual(
             BUILD.split_custom_wake_word_phrases("xiao tu dou"),

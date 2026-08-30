@@ -33,4 +33,4 @@ Tool call results:
 }
 ```
 
-See [mcp-protocol.md](./mcp-protocol.md) and [mcp-usage.md](./mcp-usage.md). Device tool catalog for Phoe Lone / otto-robot is in [backend_spec.md](../backend_spec.md).
+See [mcp-protocol.md](./mcp-protocol.md) and [mcp-usage.md](./mcp-usage.md). Device tool catalog for Mickey is in [backend_spec.md](../backend_spec.md).

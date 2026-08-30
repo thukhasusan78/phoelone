@@ -1,4 +1,4 @@
-# Phoe Lone Option B — flash + serial monitor (servos unpowered)
+# Mickey — flash + serial monitor (servos unpowered)
 param(
     [string]$Port = "",
     [int]$Baud = 115200
@@ -30,7 +30,7 @@ if (-not $Port) {
 
 if (-not $Port) {
     Write-Host "No ESP32 USB serial port found. Connect the board (servo power OFF) and rerun:"
-    Write-Host "  .\scripts\phoe_lone_flash.ps1 -Port COMx"
+    Write-Host "  .\scripts\mickey_flash.ps1 -Port COMx"
     exit 2
 }
 

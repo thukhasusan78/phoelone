@@ -1,8 +1,8 @@
-# Phoe Lone Backend Specification
+# Mickey Backend Specification
 
-This document is the XiaoZhi **wire protocol** (OTA, WebSocket, MCP, audio framing) derived from the ESP-IDF client (`otto-robot` / Phoe Lone). How **this** FastAPI repo actually runs (Silero VAD, Gemini Live, local music) is in [README.md](README.md). Do **not** invent extra device-side APIs.
+This document is the XiaoZhi **wire protocol** (OTA, WebSocket, MCP, audio framing) derived from the ESP-IDF client (`otto-robot` / Mickey). How **this** FastAPI repo actually runs (Silero VAD, Gemini Live, local music) is in [README.md](README.md). Do **not** invent extra device-side APIs.
 
-**Primary transport for Phoe Lone:** WebSocket (stock otto-robot). MQTT + UDP is optional and must still be implemented if the OTA JSON advertises it.
+**Primary transport for Mickey:** WebSocket (stock otto-robot). MQTT + UDP is optional and must still be implemented if the OTA JSON advertises it.
 
 **Firmware profile:** `python scripts/build.py otto-robot --name otto-robot`  
 **Chip:** ESP32-S3, 16 MB flash, 8 MB octal PSRAM  
@@ -139,7 +139,7 @@ The device parses these **top-level objects**. Unknown keys are ignored. String/
 
 **Field rules:**
 
-| Object | Required for Phoe Lone WS | Behavior |
+| Object | Required for Mickey WS | Behavior |
 |--------|---------------------------|----------|
 | `websocket.url` | **Yes** | Stored as NVS `websocket`/`url`. Must be `ws://` or `wss://`. Path typically `/xiaozhi/v1/` or `/xiaozhi/v1`. |
 | `websocket.token` | Recommended | NVS `websocket`/`token`. Device sends `Authorization: Bearer <token>` unless the token already contains a space. |
@@ -308,7 +308,7 @@ Unknown `type` is logged and ignored. Missing `type` is logged as an error.
 Device → `kDeviceStateSpeaking`, starts playing binary Opus.
 
 ```json
-{ "session_id": "xxx", "type": "tts", "state": "sentence_start", "text": "Hello, I am Phoe Lone." }
+{ "session_id": "xxx", "type": "tts", "state": "sentence_start", "text": "Hello, I am Mickey." }
 ```
 
 Shows assistant subtitle. Optional glyph-push fields: see `docs/glyph-push.md`.
@@ -424,7 +424,7 @@ Implement if OTA includes a `mqtt` object. JSON **control** messages are identic
 - Extra types: device may send `{ "type": "goodbye", "session_id": "xxx" }`. Server `goodbye` with matching `session_id` closes UDP **without** the device echoing goodbye.
 - UDP packet (AES-CTR on Opus payload): `type=0x01`, `flags`, `payload_len` BE, `ssrc`, `timestamp` BE, `sequence` BE, then ciphertext. Counter is derived from timestamp + sequence (see `mqtt_protocol.cc` and `docs/mqtt-udp.md`). Drop replayed sequences.
 
-Phoe Lone can ship WS-only: omit `mqtt` from OTA JSON.
+Mickey can ship WS-only: omit `mqtt` from OTA JSON.
 
 ---
 
@@ -612,7 +612,7 @@ Snapshot/preview require `CONFIG_LV_USE_SNAPSHOT`.
 - `mode`: `"press_to_talk"` or `"click_to_talk"`
 - Saved in NVS `vendor`/`press_to_talk`
 
-### 5.8 Otto / Phoe Lone motion tools (`otto_controller.cc`)
+### 5.8 Otto / Mickey motion tools (`otto_controller.cc`)
 
 These are LLM-visible. On the **no-camera** Otto profile, hands GPIOs are `NC`; hand actions return an error string.
 
@@ -739,13 +739,13 @@ Returns plain text `"moving"` or `"idle"`.
 
 Empty IP → `{ "ip": "", "connected": false }`.
 
-#### Phoe Lone stubs (always return immediately, no I2C)
+#### Mickey stubs (always return immediately, no I2C)
 
 | Name | Return JSON |
 |------|-------------|
-| `self.phoe_lone.imu.get_reading` | `{ "wired": false, "sensor": "MPU6050", "reason": "I2C pins are GPIO_NUM_NC on otto-robot no-camera" }` |
-| `self.phoe_lone.light.get_level` | `{ "wired": false, "sensor": "light", "reason": "no light-sensor GPIO in stock otto-robot config" }` |
-| `self.phoe_lone.touch.get_state` | `{ "wired": false, "sensor": "touch", "reason": "no touch GPIO in stock otto-robot config" }` |
+| `self.mickey.imu.get_reading` | `{ "wired": false, "sensor": "MPU6050", "reason": "I2C pins are GPIO_NUM_NC on otto-robot no-camera" }` |
+| `self.mickey.light.get_level` | `{ "wired": false, "sensor": "light", "reason": "no light-sensor GPIO in stock otto-robot config" }` |
+| `self.mickey.touch.get_state` | `{ "wired": false, "sensor": "touch", "reason": "no touch GPIO in stock otto-robot config" }` |
 
 The LLM should say the sensor is not wired yet rather than inventing readings.
 
@@ -766,7 +766,7 @@ Minimum set so “nothing is left behind” versus a full XiaoZhi-style assistan
 | `send_email` | `to`, `subject`, `body` | Optional; original cloud MCP extension. |
 | smart-home / PC control | vendor-specific | Original cloud MCP; out of scope unless you add cloud MCP servers. |
 
-**LLM policy for Phoe Lone:**
+**LLM policy for Mickey:**
 
 1. If the user asks about device state (volume, battery, Wi-Fi) → device `self.get_device_status`.
 2. If the user asks to move/dance/stop → device `self.otto.*`.
@@ -851,7 +851,7 @@ Reference client sources (do not copy cloud servers):
 - `main/protocols/protocol.cc`
 - `main/application.cc` (`OnIncomingJson`)
 - `main/mcp_server.cc` / `main/mcp_server.h`
-- `main/boards/otto-robot/otto_controller.cc`
+- `main/boards/mickey/otto_controller.cc`
 - `docs/websocket.md`, `docs/mqtt-udp.md`, `docs/mcp-protocol.md`
 
 ---
@@ -860,6 +860,6 @@ Reference client sources (do not copy cloud servers):
 
 - Do not require pin changes or a custom board type.
 - Do not send `type: iot` (deprecated).
-- Do not call `self.chassis.*` / `self.dog.*` / `self.electron.*` on Phoe Lone; those belong to other boards.
+- Do not call `self.chassis.*` / `self.dog.*` / `self.electron.*` on Mickey; those belong to other boards.
 - Do not block waiting for IMU/light/touch hardware; stubs already return `wired: false`.
 - Do not put Python FastAPI sources in this ESP-IDF repository; deploy them on the VPS only.

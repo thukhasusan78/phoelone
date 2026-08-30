@@ -15,4 +15,4 @@ The device sends a JSON `hello` (`transport: "websocket"`, Opus 16 kHz mono, `fe
 
 Binary protocol versions: v1 raw Opus, v2 `BinaryProtocol2` (big-endian metadata + timestamp), v3 `BinaryProtocol3`.
 
-See [websocket.md](./websocket.md) for full JSON examples, state machines, and audio rules. For Phoe Lone VPS implementation use [backend_spec.md](../backend_spec.md).
+See [websocket.md](./websocket.md) for full JSON examples, state machines, and audio rules. For Mickey VPS implementation use [backend_spec.md](../backend_spec.md).

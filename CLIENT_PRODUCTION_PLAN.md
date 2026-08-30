@@ -1,11 +1,11 @@
-# Phoe Lone Client Production Plan (ESP32 firmware)
+# Mickey Client Production Plan (ESP32 firmware)
 
-**Status:** planning document only. Do not change application C++ until this file is used as an implementation brief.  
+**Status:** P0 leftovers (hands/GPIO 12, servo hold, JSON ping, `mickey` OTA identity) and branding/OTA URL are **Done**. Sensor work has not started.  
 **Date:** 2026-08-24  
 **Upstream compared:** [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) `main` (2026-08). This tree is a XiaoZhi fork; core setup already exists. See [§12](#12-xiaozhi-first-boot-parity-vs-78xiaozhi-esp32).  
-**Repo:** [thukhasusan78/phoelone](https://github.com/thukhasusan78/phoelone) — board profile `otto-robot` (no-camera), chip ESP32-S3 N16R8, ESP-IDF v6.0.2.  
+**Repo:** [thukhasusan78/phoelone](https://github.com/thukhasusan78/phoelone) — board profile `mickey` (no-camera, no-hands), chip ESP32-S3 N16R8, ESP-IDF v6.0.2.  
 **Companion:** server work lives in `BACKEND_PRODUCTION_PLAN.md` on the VPS. This file never assigns Python tasks.  
-**Build:** `python scripts/build.py otto-robot --name otto-robot --language en-US`  
+**Build:** `python scripts/build.py mickey --name mickey --language en-US`  
 **Invariant:** voice capture, wake word, Opus uplink/downlink, Otto MCP motion, and display GIFs must keep working. New work runs on **separate FreeRTOS tasks** below audio priority.
 
 The backend is a remote FastAPI service. Treat the JSON/MCP shapes in §4 as a frozen wire contract. If you need a server change, note it in a PR comment; do not implement it here.
@@ -35,7 +35,7 @@ The backend is a remote FastAPI service. Treat the JSON/MCP shapes in §4 as a f
 
 ### 1.1 What already works on device
 
-- Wi-Fi provision (Soft-AP default; BluFi optional in Kconfig, not enabled on otto-robot), reconnect, close audio channel on disconnect. First-boot AP SSID prefix is still `Xiaozhi`. Boot GPIO 0 click during `kDeviceStateStarting` enters config; there is **no** idle long-press re-pair on this board.
+- Wi-Fi provision (Soft-AP default; BluFi optional in Kconfig, not enabled on mickey), reconnect, close audio channel on disconnect. First-boot AP SSID prefix is `Mickey`. Boot GPIO 0 click during `kDeviceStateStarting` enters config; there is **no** idle long-press re-pair on this board.
 - Boot OTA POST to `CONFIG_OTA_URL`, parse `websocket.url` + token into NVS.
 - WebSocket hello, raw Opus v1, listen/start/detect/abort, MCP as JSON-RPC inside `type: mcp`.
 - Device MCP: `self.get_device_status`, volume, brightness, theme, `self.otto.*`, `self.battery.get_level`, `self.otto.get_ip`.
@@ -51,12 +51,14 @@ The backend is a remote FastAPI service. Treat the JSON/MCP shapes in §4 as a f
 - MPU6050 / light / touch: MCP tools return `wired: false` and never touch hardware. **No pins in `config.h`.**
 - `NON_CAMERA_VERSION_CONFIG`: `i2c_sda_pin` / `i2c_scl_pin` = `GPIO_NUM_NC`.
 - Camera-variant I2C (GPIO 15/16) is **speaker BCLK/LRCK** on this robot — never reuse.
-- Hands: `left_hand_pin = 8`, `right_hand_pin = 12`. `has_hands_` is true because neither is `NC`. GPIO **12 is LCD CS**. Hand actions can PWM the display.
-- `self.otto.stop` on GitHub still `vTaskDelete`s the action task → PWM off → servo sag. Hold patches are in the backend repo `firmware/otto-robot/patches/` and must be applied **in this firmware tree**.
-- `OnIncomingJson` has no `ping` case → serial `Unknown message type: ping` every ~30 s. The text frame still resets the **120 s** last-incoming timer (`docs/websocket.md` / `backend_spec.md`).
+- Hands: **Done.** `left_hand_pin` / `right_hand_pin` = `GPIO_NUM_NC`. GPIO **12 is LCD CS only**. Hand tools return `Error: this action requires hand servos`.
+- `self.otto.stop`: **Done.** Cooperative stop (no `vTaskDelete`); oscillator re-attach holds PWM; `Home()` always reapplies 90°.
+- JSON `ping`: **Done.** `OnIncomingJson` replies with `pong`; no `Unknown message type: ping`.
 - No idle fidget task. XiaoZhi is session-based: wake → `OpenAudioChannel` → talk → close → statue.
 - No low-battery motion inhibit (ADC + charge GPIO exist; policy does not).
-- Board type is still `otto-robot`, not `phoe-lone`.
+- Board type: **Done.** `config.json` `"type"` / `"name"` = `mickey`; Kconfig `BOARD_TYPE_MICKEY`; OTA POST `board.type` is `mickey`.
+- SoftAP branding: **Done.** AP/hostname prefix `Mickey` in `wifi_board.cc`.
+- Production OTA URL: **Done.** `CONFIG_OTA_URL=https://phoelone.thukha.online/xiaozhi/ota/`.
 - No idle long-press re-pair; `SystemReset` is unused (same as stock otto). Wrong Wi-Fi password requires a 60 s timeout or NVS erase.
 
 ### 1.3 EMO constraint (firmware-owned)
@@ -124,7 +126,7 @@ If the modules are **already soldered** to other **free** pins (13, 45, 48, 1, 2
 
 1. Photograph SDA, SCL, INT, light, touch nets.
 2. Diff against §2.1–2.2.
-3. Commit `#define`s in `config.h` with comments (`PHOE_LONE_IMU_SDA`, etc.).
+3. Commit `#define`s in `config.h` with comments (`MICKEY_IMU_SDA`, etc.).
 4. First boot with **servo 5 V unpowered** until I2C WHO_AM_I succeeds.
 
 ---
@@ -133,13 +135,13 @@ If the modules are **already soldered** to other **free** pins (13, 45, 48, 1, 2
 
 ### 3.1 Today (stubs)
 
-**File:** `main/boards/otto-robot/otto_controller.cc` → `RegisterMcpTools()`.
+**File:** `main/boards/mickey/otto_controller.cc` → `RegisterMcpTools()`.
 
 | Tool | Current body |
 |------|----------------|
-| `self.phoe_lone.imu.get_reading` | Immediate JSON `wired:false`, reason I2C NC |
-| `self.phoe_lone.light.get_level` | Immediate JSON `wired:false` |
-| `self.phoe_lone.touch.get_state` | Immediate JSON `wired:false` |
+| `self.mickey.imu.get_reading` | Immediate JSON `wired:false`, reason I2C NC |
+| `self.mickey.light.get_level` | Immediate JSON `wired:false` |
+| `self.mickey.touch.get_state` | Immediate JSON `wired:false` |
 
 No driver, no task, no ISR, no NVS thresholds.
 
@@ -178,12 +180,12 @@ MCP tool callbacks (application task)
 
 | File | Responsibility |
 |------|----------------|
-| `main/boards/otto-robot/phoe_lone_sensors.h` | Pin macros, snapshot struct, `Start()`, `GetSnapshot()` |
-| `main/boards/otto-robot/phoe_lone_sensors.cc` | I2C init, MPU WHO_AM_I `0x68`/`0x69`, DMP-less raw accel/gyro, INT ISR, light, touch |
-| `main/boards/otto-robot/phoe_lone_behavior.h/.cc` | Idle director (P1) |
+| `main/boards/mickey/mickey_sensors.h` | Pin macros, snapshot struct, `Start()`, `GetSnapshot()` |
+| `main/boards/mickey/mickey_sensors.cc` | I2C init, MPU WHO_AM_I `0x68`/`0x69`, DMP-less raw accel/gyro, INT ISR, light, touch |
+| `main/boards/mickey/mickey_behavior.h/.cc` | Idle director (P1) |
 | `config.h` | Pin `#define`s + `OTTO_HAS_HANDS 0` |
 
-Keep MCP registration in `otto_controller.cc` (or a small `RegisterPhoeLoneSensorTools()` called from there) so tool names stay `self.phoe_lone.*`.
+Keep MCP registration in `otto_controller.cc` (or a small `RegisterMickeySensorTools()` called from there) so tool names stay `self.mickey.*`.
 
 ### 3.4 MPU6050 bring-up sequence
 
@@ -274,7 +276,7 @@ Envelope:
   "type": "mcp",
   "payload": {
     "jsonrpc": "2.0",
-    "method": "notifications/phoe_lone.event",
+    "method": "notifications/mickey.event",
     "params": {
       "event": "pet",
       "ts_ms": 1710000000000,
@@ -345,7 +347,7 @@ Server sends every 30 s:
 { "session_id": "<uuid>", "type": "ping" }
 ```
 
-`Application::OnIncomingJson` has no `ping` branch → `ESP_LOGW("Unknown message type: ping")`.
+`Application::OnIncomingJson` handles `type == "ping"` and `Schedule`s a `pong`. TEXT frames still reset the **120 s** last-incoming timer (`docs/websocket.md`).
 
 ### 5.2 Why the channel still lives
 
@@ -393,9 +395,9 @@ Stay in speaking for minutes (local music). JSON `ping` must still be processed 
 
 ## 6. Servo safety
 
-### 6.1 Patches to apply in **this** tree
+### 6.1 Patches applied in **this** tree
 
-Copy from VPS `phoe_lone_server/firmware/otto-robot/patches/` (or keep a local copy):
+Implemented in `main/boards/mickey/` (no VPS patch copy required):
 
 | Patch | Files | Effect |
 |-------|-------|--------|
@@ -435,7 +437,7 @@ Fall (IMU) uses the same inhibit path as an emergency stop.
 
 ## 7. Idle director
 
-Highest EMO ROI. **No cloud.** New module `phoe_lone_behavior.cc`.
+Highest EMO ROI. **No cloud.** New module `mickey_behavior.cc`.
 
 ### 7.1 When it runs
 
@@ -476,9 +478,9 @@ If speaking **and** firmware can detect “music mode” (it cannot, unless you 
 
 ### 8.1 Today
 
-1. `Ota::CheckVersion()` POST (or GET) to `CONFIG_OTA_URL` (today hardcoded in `otto-robot/config.json` to the VPS).
+1. `Ota::CheckVersion()` POST (or GET) to `CONFIG_OTA_URL` (HTTPS in `mickey/config.json`).
 2. Headers: `Device-Id`, `Client-Id`, `Activation-Version`, `Accept-Language`, etc.
-3. Body: `Board::GetSystemInfoJson()` including `board.type` = `otto-robot`.
+3. Body: `Board::GetSystemInfoJson()` including `board.type` = `mickey`.
 4. Parse `websocket.*` into NVS, `server_time`, optional `firmware.version` + `url`.
 5. If version **newer** (or `force: 1`), `UpgradeFirmware(url)`: progress UI, write partition, reboot.
 6. `MarkCurrentVersionValid()` after good boot (IDF rollback).
@@ -492,8 +494,8 @@ Lab backend returns `0.0.0` + `/firmware/none.bin` **404** → skip. That is cor
 |----|------|
 | C-OTA.1 | Keep skip-upgrade when version is `0.0.0` or download 404s (already). |
 | C-OTA.2 | Never `force` from device. |
-| C-OTA.3 | Before **production** binaries: copy board to `main/boards/phoe-lone/`, unique `BOARD_TYPE`, `config.json` `"type": "phoe-lone"`. OTA POST `board.type` must match the VPS channel. |
-| C-OTA.4 | HTTPS OTA URL in production `sdkconfig` / NVS `wifi.ota_url`. |
+| C-OTA.3 | **Done.** Board is `main/boards/mickey/`, unique `BOARD_TYPE`, `config.json` `"type": "mickey"`. OTA POST `board.type` must match the VPS channel. |
+| C-OTA.4 | **Done.** HTTPS OTA URL `https://phoelone.thukha.online/xiaozhi/ota/` in `mickey/config.json`. |
 | C-OTA.5 | Confirm dual-bank partition (`partitions/v2/16m.csv`); test rollback by crashing once after a staging flash. |
 | C-OTA.6 | During upgrade: `SetPowerSaveLevel(PERFORMANCE)`, stop audio, no servo motion. |
 | C-OTA.7 | Do not erase NVS websocket token mid-upgrade except as stock XiaoZhi already does. Token rotate is a **server** bug; client just writes whatever OTA JSON contains. |
@@ -517,11 +519,11 @@ Tick these in firmware PRs. Server checkboxes live in `BACKEND_PRODUCTION_PLAN.m
 
 ### P0 — safety, keepalive, sensors local
 
-- [ ] **P0.1** Apply oscillator / home / cooperative-stop patches. `self.otto.stop` does not `vTaskDelete`. Pose holds 30 s with 5 V servos.
-- [ ] **P0.2** Hands NC / `OTTO_HAS_HANDS=0`. GPIO 12 never LEDC. Hand tools error.
-- [ ] **P0.3** Plan `main/boards/phoe-lone/` (can land after sensors; **must** land before a real OTA `.bin`).
+- [x] **P0.1** Apply oscillator / home / cooperative-stop patches. `self.otto.stop` does not `vTaskDelete`. Pose holds 30 s with 5 V servos. **Done** (hardware 30 s hold still needs a bench check).
+- [x] **P0.2** Hands NC / no-camera SKU. GPIO 12 never LEDC. Hand tools error in English. **Done**.
+- [x] **P0.3** Board lives in `main/boards/mickey/` with unique `BOARD_TYPE` / `config.json` `"type": "mickey"`. **Done**.
 - [ ] **P0.4** Low battery: no walk/jump; OGG; dim; home.
-- [ ] **P0.6** `ping` handler; `pong` JSON; no WARN log.
+- [x] **P0.6** `ping` handler; `pong` JSON; no WARN log. **Done**.
 - [ ] **P0.7** Measure: opcode ping vs 120 s timer; document result in `docs/websocket.md`.
 - [ ] **P0.8** Wake-word abort during TTS **and** during a long music stream (AFE wake word enabled in speaking).
 - [ ] **P0.S1** Real pins in `config.h` (not NC) matching solder.
@@ -545,7 +547,7 @@ Tick these in firmware PRs. Server checkboxes live in `BACKEND_PRODUCTION_PLAN.m
 ### P2 — product SKU
 
 - [ ] **P2.1** Local clock + sleepy night pose (server_time already applied at OTA).
-- [ ] **P2.3** `phoe-lone` board type in OTA JSON; HTTPS; rollback tested.
+- [x] **P2.3** `mickey` board type in OTA JSON; HTTPS URL set. Rollback crash test still open (C-OTA.5 / P2.UX6).
 - [ ] **P2.4** If enabling `CONFIG_USE_SERVER_AEC`: hello `features.aec`, protocol v2 timestamps, `listen mode: realtime`. Simplex I2S will limit quality.
 - [ ] **P2.6** Optional `esp_coredump` UART or HTTP post (needs server URL).
 - [ ] **P2.7** Glyph-push consume path already in upstream; ensure Myanmar glyphs if you show STT on LCD.
@@ -575,28 +577,28 @@ Out of firmware scope: 4G, MQTT voice, LivingAI assets, Python. SmartConfig is a
 
 | Path | Change |
 |------|--------|
-| `main/boards/otto-robot/config.h` | Hands NC; sensor pins |
-| `main/boards/otto-robot/oscillator.cc` | Patch 001 |
-| `main/boards/otto-robot/otto_movements.cc` | Patch 002 |
-| `main/boards/otto-robot/otto_controller.cc` | Patch 003; MCP live sensors |
-| `main/boards/otto-robot/phoe_lone_sensors.*` | **New** |
-| `main/boards/otto-robot/phoe_lone_behavior.*` | **New** (P1) |
-| `main/application.cc` | `ping` / `pong` |
-| `main/protocols/websocket_protocol.cc` | Verify last-incoming vs opcode ping |
-| `docs/websocket.md` | Document `ping`/`pong` |
-| `main/boards/phoe-lone/` | P0.3 / P2.3 |
-| `otto-robot/config.json` | `CONFIG_OTA_URL` HTTPS; later `type: phoe-lone` |
-| `main/boards/otto-robot/otto_robot.cc` | P2.UX2 / P2.UX4: idle re-pair + NVS erase gesture (stock otto has neither) |
-| `main/boards/common/wifi_board.cc` | Optional: AP SSID prefix `PhoeLone`; already has SoftAP + BluFi |
+| `main/boards/mickey/config.h` | **Done:** hands NC; later: sensor pins |
+| `main/boards/mickey/oscillator.cc` | **Done:** hold on re-Attach |
+| `main/boards/mickey/otto_movements.cc` | **Done:** Home always reapplies; cooperative abort |
+| `main/boards/mickey/otto_controller.cc` | **Done:** cooperative stop; later: MCP live sensors |
+| `main/boards/mickey/mickey_sensors.*` | **New** (not started) |
+| `main/boards/mickey/mickey_behavior.*` | **New** (P1) |
+| `main/application.cc` | **Done:** `ping` / `pong` |
+| `main/protocols/websocket_protocol.cc` | Verified: last-incoming updates on TEXT/BINARY `OnData` only |
+| `docs/websocket.md` | **Done:** document `ping`/`pong` |
+| `main/boards/mickey/` | **Done:** P0.3 / C-OTA.3 identity |
+| `mickey/config.json` | **Done:** HTTPS OTA URL; `"type": "mickey"` |
+| `main/boards/mickey/otto_robot.cc` | P2.UX2 / P2.UX4: idle re-pair + NVS erase gesture (stock otto has neither) |
+| `main/boards/common/wifi_board.cc` | **Done:** AP SSID prefix `Mickey` |
 | `main/boards/common/system_reset.cc` | Wire or replace; currently unused in this tree **and** in stock otto |
 
 ### First firmware slices (order)
 
-1. Hands NC + stop patches + ping/pong.  
+1. **Done.** Hands NC + stop patches + ping/pong + `mickey` identity + branding/OTA URL.  
 2. `config.h` pins + MPU WHO_AM_I + MCP IMU.  
 3. Touch + light + local pet/fall + notify emit.  
 4. Idle director.  
-5. `phoe-lone` board + OTA identity.  
+5. ~~`mickey` board + OTA identity.~~ **Done** (landed with slice 1).  
 6. First-boot UX: idle re-pair, NVS wipe gesture, activation-code hardware test (§12).
 
 Stop after each slice and run the matching P0/P1 boxes.
@@ -651,7 +653,7 @@ Stock XiaoZhi does **not** implement SmartConfig / ESP-TOUCH. Pairing is:
 |----|------|-----|
 | P2.UX1 | Hardware-test first-boot AP: LCD SSID+URL, `wificonfig.ogg`, 60 s STA fallback | Code exists; must not regress when adding idle director / sensors |
 | P2.UX2 | Idle **long-press** (or triple-click) GPIO 0 → `EnterWifiConfigMode()` | Stock otto also lacks this. After first success, user cannot re-pair without a failed 60 s connect. Boards like `doit-s3-aibox` already do triple-click |
-| Optional | AP prefix `PhoeLone` instead of `Xiaozhi` in `WifiBoard::StartNetwork` | Branding only; OTA board type is separate |
+| Optional | AP prefix `Mickey` instead of `Xiaozhi` in `WifiBoard::StartNetwork` | **Done.** Branding only; OTA board type is separate |
 | Do not | Enable BluFi unless we ship EspBlufi docs | Hotspot is the stock default |
 | Do not | Port SmartConfig | Upstream does not have it |
 | Later | Upstream `kDeviceStateNotifying` + `NotifyPlayer` | Newer XiaoZhi so pairing can start during a prompt. Not required for v1 |
@@ -677,17 +679,17 @@ OGG files are git-tracked under `main/assets/locales/en-US/` (`activation.ogg`, 
 
 ### 12.3 Wake-word engine (ESP-SR)
 
-| Piece | Upstream / this tree | otto-robot SKU |
+| Piece | Upstream / this tree | mickey SKU |
 |-------|----------------------|----------------|
-| Default on S3+PSRAM | `CONFIG_USE_AFE_WAKE_WORD` | Yes (not `USE_ESP_WAKE_WORD`; that is C3/C5/C6) |
-| Default model | `CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y` (`sdkconfig.defaults.esp32s3`) | Same. Phrase is 你好小智 / nihaoxiaozhi |
-| Custom MultiNet | `USE_CUSTOM_WAKE_WORD` + `mn*` models | Off unless we choose it |
+| Default on S3+PSRAM | `CONFIG_USE_AFE_WAKE_WORD` | Yes. WakeNet is the always-on spotter |
+| Default model | `CONFIG_SR_WN_WN9_HIESP=y` | English “Hi ESP”. Reliable AFE/WakeNet fallback |
+| Custom MultiNet | `USE_CUSTOM_WAKE_WORD` + `mn7_en` | On. Extra phrases: Mickey / Hey Mickey / Hi Mickey plus syllable variants |
 | Runtime “switch phrase” | No API to swap WakeNet names in RAM | Change model via **assets** download (`srmodels.bin`) or rebuild |
 | Enable/disable | AFE `enable_wakenet` / `disable_wakenet` by state | Idle on; listening off unless `WAKE_WORD_DETECTION_IN_LISTENING`; **speaking keeps AFE wake word** (P0.8 already) |
-| Device AEC | `aec_init` only if `codec->input_reference()` | Simplex `NoAudioCodec`: **no** reference channel → AEC never inits. Same as stock otto no-camera. `USE_DEVICE_AEC` Kconfig does not list otto-robot |
+| Device AEC | `aec_init` only if `codec->input_reference()` | Simplex `NoAudioCodec`: **no** reference channel → AEC never inits. Same as stock otto no-camera. `USE_DEVICE_AEC` Kconfig does not list mickey |
 | Server AEC | `CONFIG_USE_SERVER_AEC` | Still P2.4; simplex quality is limited |
 
-Do **not** port extra WakeNet models unless product wants English/Myanmar wake words (`scripts/build.py --wake-word …`). Do **not** enable device AEC without a hardware I2S loopback / codec reference pin (none on this SKU).
+ESP-SR has no shipped Mickey WakeNet. AFE/WakeNet (`wn9_hiesp`) is the always-on engine; MultiNet English phrases add “Mickey” variants for Burmese-accented speech. Do **not** enable device AEC without a hardware I2S loopback / codec reference pin (none on this SKU).
 
 ### 12.4 Boot, NVS, recovery, OTA rollback
 
@@ -701,7 +703,7 @@ Do **not** port extra WakeNet models unless product wants English/Myanmar wake w
 | Dual-bank OTA | `partitions/v2/16m.csv`: `ota_0`/`ota_1` + `otadata` | Same | C-OTA.5 / P2.UX6 |
 | `MarkCurrentVersionValid` | After successful version check | Same | Keep; test rollback |
 | Factory app partition | Not in 16M v2 table | Same | `ResetToFactory` would only erase otadata; do not rely on a factory app slot |
-| Default OTA URL | `https://api.tenclass.net/xiaozhi/ota/` | otto `config.json` overrides to lab `http://206.189.94.197:8000/xiaozhi/ota/` | C-OTA.4 HTTPS + VPS channel |
+| Default OTA URL | `https://api.tenclass.net/xiaozhi/ota/` | mickey `config.json` overrides to `https://phoelone.thukha.online/xiaozhi/ota/` | **C-OTA.4 Done** |
 
 ### 12.5 What is already at parity (do not reimplement)
 
@@ -717,5 +719,5 @@ Do **not** port extra WakeNet models unless product wants English/Myanmar wake w
 2. **P2.UX4** Boot-held NVS wipe (Wi-Fi + websocket token) so a wrong password is recoverable.  
 3. **P2.UX3** Hardware-test activation with a temporary server `activation.code`.  
 4. **P2.UX1 / P2.UX5 / P2.UX6** Prove pairing audio, wake word, and OTA rollback on the no-camera robot.  
-5. Optional branding: AP hostname prefix `PhoeLone`.  
+5. Optional branding: AP hostname prefix `Mickey`. **Done.**  
 6. Optional later: merge upstream `NotifyPlayer` / `kDeviceStateNotifying` if prompt playback blocks pairing.

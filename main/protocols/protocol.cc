@@ -2,6 +2,7 @@
 #include "assets.h"
 
 #include <esp_log.h>
+#include <string>
 
 #define TAG "Protocol"
 
@@ -94,6 +95,12 @@ void Protocol::SendStopListening() {
 void Protocol::SendMcpMessage(const std::string& payload) {
     std::string message =
         "{\"session_id\":\"" + session_id_ + "\",\"type\":\"mcp\",\"payload\":" + payload + "}";
+    SendText(message);
+}
+
+void Protocol::SendPong(int64_t ts_ms) {
+    std::string message = "{\"session_id\":\"" + session_id_ +
+                          "\",\"type\":\"pong\",\"ts_ms\":" + std::to_string(ts_ms) + "}";
     SendText(message);
 }
 

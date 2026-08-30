@@ -118,6 +118,12 @@ bool CustomWakeWord::Initialize(AudioCodec* codec, srmodel_list_t* models_list) 
     } else {
         models_ = models_list;
         ParseWakenetModelConfig();
+#ifdef CONFIG_CUSTOM_WAKE_WORD
+        if (commands_.empty()) {
+            threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
+            AddWakeCommands(CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY);
+        }
+#endif
     }
 
     if (models_ == nullptr || models_->num == -1) {

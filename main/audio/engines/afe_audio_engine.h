@@ -47,12 +47,6 @@ public:
     const std::string& GetLastDetectedWakeWord() const override { return last_detected_wake_word_; }
 
 private:
-    enum class WakeDetector {
-        kNone,
-        kWakeNet,
-        kMultiNet,
-    };
-
     static constexpr EventBits_t kWakeWordEnabled = 1 << 0;
     static constexpr EventBits_t kVoiceProcessingEnabled = 1 << 1;
     static constexpr EventBits_t kAfeActive = 1 << 2;
@@ -76,7 +70,9 @@ private:
     // Incremented whenever an active AFE session is invalidated. ProcessingTask
     // uses it to reject a fetch result produced before a disable/re-enable cycle.
     std::atomic<uint32_t> control_generation_{0};
-    WakeDetector wake_detector_ = WakeDetector::kNone;
+    bool use_wakenet_ = false;
+    bool use_multinet_ = false;
+    bool last_wake_from_multinet_ = false;
 
     std::unique_ptr<CustomWakeWord> custom_wake_word_;
     std::vector<std::string> wake_words_;

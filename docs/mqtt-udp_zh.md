@@ -16,4 +16,4 @@ Device hello uses `transport: "udp"`. Server hello must include `udp.server`, `u
 
 Control JSON types match WebSocket (`listen`, `abort`, `mcp`, `stt`, `tts`, `llm`, `system`, `alert`, `goodbye`).
 
-See [mqtt-udp.md](./mqtt-udp.md) for encryption, sequence numbers, and reconnect. For Phoe Lone VPS implementation use [backend_spec.md](../backend_spec.md).
+See [mqtt-udp.md](./mqtt-udp.md) for encryption, sequence numbers, and reconnect. For Mickey VPS implementation use [backend_spec.md](../backend_spec.md).

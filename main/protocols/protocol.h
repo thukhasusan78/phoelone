@@ -3,6 +3,7 @@
 
 #include <cJSON.h>
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -35,7 +36,7 @@ enum AbortReason { kAbortReasonNone, kAbortReasonWakeWordDetected };
 enum ListeningMode {
     kListeningModeAutoStop,
     kListeningModeManualStop,
-    kListeningModeRealtime  // 需要 AEC 支持
+    kListeningModeRealtime  // requires AEC
 };
 
 class Protocol {
@@ -64,6 +65,7 @@ public:
     virtual void SendStopListening();
     virtual void SendAbortSpeaking(AbortReason reason);
     virtual void SendMcpMessage(const std::string& message);
+    virtual void SendPong(int64_t ts_ms);
 
 protected:
     std::function<void(const cJSON* root)> on_incoming_json_;

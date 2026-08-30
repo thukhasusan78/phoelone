@@ -54,7 +54,7 @@ void WifiBoard::StartNetwork() {
 
     // Initialize WiFi manager
     WifiManagerConfig config;
-    config.ssid_prefix = "PhoeLone";
+    config.ssid_prefix = "Mickey";
     config.language = Lang::CODE;
     config.show_ota_config = true;
     config.show_sleep_config = true;

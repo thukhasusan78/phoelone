@@ -1,7 +1,7 @@
-# Phoe Lone AI Robot - Agent Context & Instructions
+# Mickey AI Robot - Agent Context & Instructions
 
 ## 1. Project Core Objective
-You are assisting Thu Kha Su San in developing "Phoe Lone," an ESP32-S3 desktop AI robot based on the open-source XiaoZhi client. 
+You are assisting Thu Kha Su San in developing "Mickey," an ESP32-S3 desktop AI robot based on the open-source XiaoZhi client. 
 **CRITICAL GOAL:** We are NOT using the official XiaoZhi cloud server. We are building a **Custom Local Backend Server**. The ESP32 client code should remain as unmodified as possible, only changing what is strictly necessary to point to our custom backend.
 
 ## 2. Hardware & Pinout Status (DO NOT MODIFY PINS)
@@ -28,5 +28,5 @@ When the user wants to add new modules (e.g., MPU6050, Light Sensor, Touch Senso
 
 ## 5. Strict Rules for Agent
 - **DO NOT use PlatformIO.** Use the official ESP-IDF v6.0.x workflow.
-- Build command: `python scripts/build.py otto-robot --name otto-robot` (Keep using the default otto-robot profile).
+- Build command: `python scripts/build.py mickey --name mickey --language en-US`
 - When modifying code, explain *why* and *which file* is being changed.

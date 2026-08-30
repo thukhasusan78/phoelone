@@ -11,13 +11,14 @@ engine.
 
 | Target | Engine | Wake word | Uplink processing |
 | --- | --- | --- | --- |
-| ESP32-S3 / ESP32-P4 / ESP32-S31 | `AfeAudioEngine` | WakeNet inside AFE, or MultiNet fed from AFE output | FD AEC + VAD when audio processing is enabled |
+| ESP32-S3 / ESP32-P4 / ESP32-S31 | `AfeAudioEngine` | WakeNet inside AFE (always-on spotter); MultiNet may run alongside for extra phrases | FD AEC + VAD when audio processing is enabled |
 | ESP32 / ESP32-C3 / ESP32-C5 / ESP32-C6 | `LiteAudioEngine` | Standalone WakeNet when configured | Raw mono PCM |
 
 `AfeAudioEngine` owns a single FD AFE instance. WakeNet and voice uplink share
-that instance, so enabling both no longer creates two AFE pipelines. For custom
-MultiNet wake words, AFE fetch output is passed to `CustomWakeWord`; MultiNet is
-not created on the smaller targets.
+that instance, so enabling both no longer creates two AFE pipelines. WakeNet is
+the always-on keyword spotter when a `wn*` model is packed. MultiNet custom
+phrases are optional extras fed from the same AFE fetch output; they do not
+replace WakeNet. MultiNet is not created on the smaller targets.
 
 The AFE configuration currently uses `FD_LOW_COST` AEC with
 `AEC_NLP_LEVEL_VERYAGGR`. WebRTC/NSNet noise suppression is intentionally

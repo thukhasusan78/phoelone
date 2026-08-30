@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <cJSON.h>
 #include <cstring>
+#include <cstdint>
 
 #define TAG "Application"
 
@@ -632,6 +633,19 @@ void Application::InitializeProtocol() {
                     ESP_LOGW(TAG, "Unknown system command: %s", command->valuestring);
                 }
             }
+        } else if (strcmp(type->valuestring, "ping") == 0) {
+            int64_t ts_ms = 0;
+            auto ts = cJSON_GetObjectItem(root, "ts_ms");
+            if (cJSON_IsNumber(ts)) {
+                ts_ms = static_cast<int64_t>(ts->valuedouble);
+            } else {
+                ts_ms = esp_timer_get_time() / 1000;
+            }
+            Schedule([this, ts_ms]() {
+                if (protocol_ != nullptr) {
+                    protocol_->SendPong(ts_ms);
+                }
+            });
         } else if (strcmp(type->valuestring, "alert") == 0) {
             auto status = cJSON_GetObjectItem(root, "status");
             auto message = cJSON_GetObjectItem(root, "message");

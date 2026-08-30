@@ -78,6 +78,7 @@ This document describes the WebSocket communication protocol between the device 
      - `OnData(...)`:
        - If `binary` is `true`, the payload is treated as an Opus frame and decoded.
        - If `binary` is `false`, the payload is parsed as JSON and dispatched by `type`.
+       - Either TEXT or BINARY `OnData` updates `last_incoming_time_` (120 s idle timeout). Opcode ping/pong does not.
 
    - When the server or network drops, `OnDisconnected()` fires:
      - The device invokes `on_audio_channel_closed_()` and eventually returns to the idle state.
@@ -223,6 +224,16 @@ WebSocket text frames carry JSON. The most common `"type"` values and their sema
      }
      ```
 
+6. **Pong**
+   - Reply to a server JSON `ping`. Sent via `Protocol::SendPong`. Echoes `ts_ms` when the ping included it; otherwise uses device time in milliseconds.
+     ```json
+     {
+       "session_id": "xxx",
+       "type": "pong",
+       "ts_ms": 1710000000000
+     }
+     ```
+
 ---
 
 ### 4.2 Server -> Device
@@ -309,7 +320,15 @@ WebSocket text frames carry JSON. The most common `"type"` values and their sema
      }
      ```
 
-9. **Binary audio frames**
+9. **Ping**
+   - Application keepalive, typically every 30 s while the audio channel is open:
+     ```json
+     { "session_id": "xxx", "type": "ping", "ts_ms": 1710000000000 }
+     ```
+   - `Application::OnIncomingJson` replies with `type: "pong"` (no state or emotion change). `ts_ms` is optional.
+   - The 120 s channel timeout (`Protocol::IsTimeout`) is reset only when `WebsocketProtocol` receives a TEXT or BINARY `OnData` callback. JSON ping therefore keeps the application timer alive. WebSocket opcode 0x9 ping/pong is handled in the IDF stack and does **not** update `last_incoming_time_`.
+
+10. **Binary audio frames**
    - When the server pushes Opus-encoded audio as binary frames, the device decodes and plays them.
    - Frames received while the device is in the `listening` state are dropped to avoid conflicts with the microphone stream.
 
@@ -532,7 +551,7 @@ This protocol carries JSON text and binary Opus frames over a WebSocket connecti
 
 - **Handshake**: send `"type":"hello"` and wait for the server reply.
 - **Audio channel**: bidirectional Opus streaming, with three binary framing variants.
-- **JSON messages**: dispatched by `"type"` (TTS, STT, MCP, WakeWord, System, Alert, Custom, ...).
+- **JSON messages**: dispatched by `"type"` (TTS, STT, MCP, ping/pong, WakeWord, System, Alert, Custom, ...).
 - **Extensibility**: extra fields in JSON, additional headers for authentication.
 
 Server and device must agree on the meaning, timing, and error handling of each message type so the session runs smoothly. The text above provides the baseline for integration, debugging, and extension.
