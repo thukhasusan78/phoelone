@@ -52,6 +52,7 @@ While the device is in `kDeviceStateIdle`, `mickey_behavior.cc` runs a local fid
 - MPU6050: while a fidget is running (and for 400 ms after), pickup/shake and tilt/bounce fall are masked so self-motion does not freeze the director. True freefall (`|a| < 0.25 g`) still homes the servos.
 - Low battery (default ≤15%, not charging): no body fidgets or MCP dances; home + `sleepy` + dim backlight. `self.otto.stop` / `home` still work.
 - Going to sleep emits `notifications/phoe_lone.event` `"event":"sleep"` then closes the companion socket.
+- Companion `/xiaozhi/v1/` stays open in idle with Wi-Fi PERFORMANCE. Do not modem-sleep that TLS socket; reconnect uses 1–60 s backoff so a flapping backend is not hit every second.
 
 A TTP223 on GPIO 47 requires a continuous hold of about **800 ms** before the happy/pet reaction (brief taps are ignored). After release, the smile stays for **3 s**, then the face returns to `staticstate` and the body homes. Pet-to-wake: GPIO 47 is not an RTC pad on ESP32-S3, so sleep uses **light sleep** plus a **5 s** hold; a shorter touch while asleep is ignored. MPU6050 fall stops servos immediately. Clips stop on wake word, GPIO chat toggle, dashboard/cloud `self.otto.action` / `servo_sequences` / `stop`, pet, pickup, or sleep. Fidgets stay off while listening or speaking so servo noise does not hit VAD. A server `llm` emotion pauses the director for 30 seconds.
 

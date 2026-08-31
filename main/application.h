@@ -191,6 +191,8 @@ private:
     void EnsureCompanionChannel();
     void ScheduleCompanionReconnect();
     void MaybeCompanionHeartbeat();
+    void BumpCompanionBackoff();
+    void HoldCompanionRadio();
 #endif
 
     // State change handler called by state machine
@@ -202,6 +204,8 @@ private:
     int companion_reconnect_backoff_s_ = 1;
     int companion_reconnect_ticks_ = 0;
     int companion_heartbeat_ticks_ = 0;
+    int companion_error_streak_ = 0;
+    int64_t companion_channel_opened_us_ = 0;
 #endif
     bool resume_listening_after_tts_ = false;
 };

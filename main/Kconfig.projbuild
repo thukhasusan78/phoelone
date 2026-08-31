@@ -1118,8 +1118,10 @@ menu "Mickey companion"
         help
             Open /xiaozhi/v1/ after activation so the companion dashboard can
             send dance, stop, and game commands without a wake word. Ending a
-            voice turn keeps the socket. Unexpected closes reconnect with backoff.
-            Deep sleep still disconnects (ResetProtocol suppresses reconnect).
+            voice turn keeps the socket. Keep Wi-Fi awake while the socket is
+            open; unexpected closes reconnect with exponential backoff (not
+            every second). Deep sleep still disconnects (ResetProtocol
+            suppresses reconnect).
 
     config COMPANION_HEARTBEAT_INTERVAL_S
         int "Companion heartbeat interval (seconds)"

@@ -157,7 +157,8 @@ Mickey does **not** register `self.set_press_to_talk` (no hold-to-talk / tap-to-
 
 - **URL:** NVS `websocket.url` from OTA.
 - **Subprotocol:** none required.
-- **Timeouts:** server hello must arrive within **10 s**. Idle timeout on device is **120 s** since last incoming frame.
+- **Timeouts:** server hello must arrive within **10 s**. Idle timeout on device is **120 s** since last incoming frame, unless a companion heartbeat `pong` send succeeds (that send refreshes the timer so a silent READY socket is not treated as dead). Failed hello/connect paths **close** the socket immediately so the VPS does not accumulate half-open sessions.
+- **Companion radio:** while `/xiaozhi/v1/` is open, Mickey keeps Wi-Fi in PERFORMANCE (no `WIFI_PS_MAX_MODEM`). Modem sleep on an idle TLS socket was dropping the session, then reconnecting every 1 s, which flaps the dashboard and can stall the droplet (including SSH). Short-lived sessions back off 1→2→4…→60 s; backoff resets only after 20 s stable.
 
 Handshake headers from device:
 
@@ -404,7 +405,7 @@ Mickey companion keepalive also sends **unsolicited** `pong` every `CONFIG_COMPA
 
 ### 3.8 Companion idle socket
 
-After activation Mickey opens `/xiaozhi/v1/` and returns to `kDeviceStateIdle` with the channel still open. Deep sleep (`self.mickey.sleep.now`) emits `notifications/phoe_lone.event` with `"event":"sleep"` then closes the socket. The dashboard should show sleeping until the alarm, not a generic offline error.
+After activation Mickey opens `/xiaozhi/v1/` and returns to `kDeviceStateIdle` with the channel still open and Wi-Fi left in PERFORMANCE. Do not idle-close a silent READY session for at least several minutes; the device heartbeats with `pong`. Unexpected drops reconnect with exponential backoff (1–60 s), not every second. Deep sleep (`self.mickey.sleep.now`) emits `notifications/phoe_lone.event` with `"event":"sleep"` then closes the socket. The dashboard should show sleeping until the alarm, not a generic offline error.
 
 ---
 

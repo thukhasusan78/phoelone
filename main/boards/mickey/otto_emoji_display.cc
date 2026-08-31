@@ -57,6 +57,8 @@ void OttoEmojiDisplay::SetEmotion(const char* emotion) {
             mapped = "sad";
         } else if (strcmp(emotion, "loving") == 0) {
             mapped = "happy";
+        } else if (strcmp(emotion, "staticstate") == 0 || strcmp(emotion, "robot_2") == 0) {
+            mapped = "neutral";
         }
     }
     LcdDisplay::SetEmotion(mapped);

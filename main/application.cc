@@ -182,8 +182,20 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
-            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
-                  Lang::Sounds::OGG_EXCLAMATION);
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            companion_error_streak_++;
+            if (protocol_ && protocol_->IsTransportConnected()) {
+                protocol_->CloseAudioChannel();
+            }
+            if (companion_error_streak_ < 3) {
+                ESP_LOGW(TAG, "Companion channel error (%d): %s", companion_error_streak_,
+                         last_error_message_.c_str());
+            } else
+#endif
+            {
+                Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
+                      Lang::Sounds::OGG_EXCLAMATION);
+            }
         }
 
         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
@@ -579,6 +591,9 @@ void Application::InitializeProtocol() {
 
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+        companion_channel_opened_us_ = esp_timer_get_time();
+#endif
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
             ESP_LOGW(TAG,
                      "Server sample rate %d does not match device output sample rate %d, "
@@ -595,6 +610,12 @@ void Application::InitializeProtocol() {
             SetDeviceState(kDeviceStateIdle);
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
             if (!companion_reconnect_suppressed_) {
+                constexpr int64_t kStableUs = 20LL * 1000 * 1000;
+                if (companion_channel_opened_us_ == 0 ||
+                    (esp_timer_get_time() - companion_channel_opened_us_) < kStableUs) {
+                    BumpCompanionBackoff();
+                }
+                companion_channel_opened_us_ = 0;
                 ScheduleCompanionReconnect();
             }
 #endif
@@ -704,6 +725,8 @@ void Application::InitializeProtocol() {
                     protocol_->SendPong(ts_ms);
                 }
             });
+        } else if (strcmp(type->valuestring, "pong") == 0) {
+            // Keepalive reply. OnData already refreshed last_incoming_time_.
         } else if (strcmp(type->valuestring, "alert") == 0) {
             auto status = cJSON_GetObjectItem(root, "status");
             auto message = cJSON_GetObjectItem(root, "message");
@@ -1015,7 +1038,7 @@ void Application::HandleStateChangedEvent() {
             audio_service_.EnableWakeWordDetection(true);
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
             if (protocol_ && protocol_->IsAudioChannelOpened()) {
-                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+                HoldCompanionRadio();
             }
 #endif
             break;
@@ -1125,13 +1148,24 @@ ListeningMode Application::GetDefaultListeningMode() const {
 }
 
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
+void Application::HoldCompanionRadio() {
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+}
+
+void Application::BumpCompanionBackoff() {
+    if (companion_reconnect_backoff_s_ < 60) {
+        int next = companion_reconnect_backoff_s_ * 2;
+        companion_reconnect_backoff_s_ = next > 60 ? 60 : next;
+    }
+}
+
 void Application::EnsureCompanionChannel() {
     if (companion_reconnect_suppressed_ || protocol_ == nullptr) {
         return;
     }
     if (protocol_->IsAudioChannelOpened()) {
-        companion_reconnect_backoff_s_ = 1;
         companion_reconnect_pending_ = false;
+        HoldCompanionRadio();
         return;
     }
 
@@ -1143,21 +1177,19 @@ void Application::EnsureCompanionChannel() {
     }
 
     ESP_LOGI(TAG, "Opening companion WebSocket (no listen)");
+    HoldCompanionRadio();
     if (!protocol_->OpenAudioChannel()) {
         SetDeviceState(kDeviceStateIdle);
-        if (companion_reconnect_backoff_s_ < 60) {
-            int next = companion_reconnect_backoff_s_ * 2;
-            companion_reconnect_backoff_s_ = next > 60 ? 60 : next;
-        }
+        BumpCompanionBackoff();
         ScheduleCompanionReconnect();
         return;
     }
 
-    companion_reconnect_backoff_s_ = 1;
     companion_reconnect_pending_ = false;
     companion_heartbeat_ticks_ = 0;
+    companion_channel_opened_us_ = esp_timer_get_time();
     SetDeviceState(kDeviceStateIdle);
-    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+    HoldCompanionRadio();
 }
 
 void Application::ScheduleCompanionReconnect() {
@@ -1170,14 +1202,31 @@ void Application::ScheduleCompanionReconnect() {
 }
 
 void Application::MaybeCompanionHeartbeat() {
-    if (protocol_ == nullptr || !protocol_->IsAudioChannelOpened()) {
+    if (protocol_ == nullptr || companion_reconnect_suppressed_) {
         return;
     }
+
+    constexpr int64_t kStableUs = 20LL * 1000 * 1000;
+    if (protocol_->IsAudioChannelOpened() && companion_channel_opened_us_ != 0 &&
+        (esp_timer_get_time() - companion_channel_opened_us_) >= kStableUs) {
+        companion_reconnect_backoff_s_ = 1;
+        companion_error_streak_ = 0;
+    }
+
     companion_heartbeat_ticks_++;
     if (companion_heartbeat_ticks_ < CONFIG_COMPANION_HEARTBEAT_INTERVAL_S) {
         return;
     }
     companion_heartbeat_ticks_ = 0;
+
+    if (!protocol_->IsAudioChannelOpened()) {
+        if (protocol_->IsTransportConnected()) {
+            ESP_LOGW(TAG, "Companion receive timeout; closing for reconnect");
+            protocol_->CloseAudioChannel();
+        }
+        return;
+    }
+
     protocol_->SendPong(esp_timer_get_time() / 1000);
 }
 #endif

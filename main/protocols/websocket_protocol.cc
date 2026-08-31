@@ -64,11 +64,16 @@ bool WebsocketProtocol::SendText(const std::string& text) {
         return false;
     }
 
+    last_incoming_time_ = std::chrono::steady_clock::now();
     return true;
 }
 
 bool WebsocketProtocol::IsAudioChannelOpened() const {
     return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
+}
+
+bool WebsocketProtocol::IsTransportConnected() const {
+    return websocket_ != nullptr && websocket_->IsConnected();
 }
 
 void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
@@ -92,11 +97,14 @@ bool WebsocketProtocol::OpenAudioChannel() {
     }
 
     error_occurred_ = false;
+    ignore_disconnect_ = true;
+    last_incoming_time_ = std::chrono::steady_clock::now();
 
     auto network = Board::GetInstance().GetNetwork();
     websocket_ = network->CreateWebSocket(1);
     if (websocket_ == nullptr) {
         ESP_LOGE(TAG, "Failed to create websocket");
+        ignore_disconnect_ = false;
         return false;
     }
 
@@ -166,6 +174,9 @@ bool WebsocketProtocol::OpenAudioChannel() {
 
     websocket_->OnDisconnected([this]() {
         ESP_LOGI(TAG, "Websocket disconnected");
+        if (ignore_disconnect_) {
+            return;
+        }
         if (on_audio_channel_closed_ != nullptr) {
             on_audio_channel_closed_();
         }
@@ -175,12 +186,16 @@ bool WebsocketProtocol::OpenAudioChannel() {
     if (!websocket_->Connect(url.c_str())) {
         ESP_LOGE(TAG, "Failed to connect to websocket server, code=%d", websocket_->GetLastError());
         SetError(Lang::Strings::SERVER_NOT_CONNECTED);
+        websocket_.reset();
+        ignore_disconnect_ = false;
         return false;
     }
 
     // Send hello message to describe the client
     auto message = GetHelloMessage();
     if (!SendText(message)) {
+        websocket_.reset();
+        ignore_disconnect_ = false;
         return false;
     }
 
@@ -191,8 +206,13 @@ bool WebsocketProtocol::OpenAudioChannel() {
     if (!(bits & WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT)) {
         ESP_LOGE(TAG, "Failed to receive server hello");
         SetError(Lang::Strings::SERVER_TIMEOUT);
+        websocket_.reset();
+        ignore_disconnect_ = false;
         return false;
     }
+
+    ignore_disconnect_ = false;
+    last_incoming_time_ = std::chrono::steady_clock::now();
 
     if (on_audio_channel_opened_ != nullptr) {
         on_audio_channel_opened_();
