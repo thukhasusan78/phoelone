@@ -1109,6 +1109,28 @@ menu "Camera Configuration"
     endif
 endmenu
 
+menu "Mickey companion"
+    depends on BOARD_TYPE_MICKEY
+
+    config COMPANION_KEEP_CHANNEL
+        bool "Keep cloud WebSocket open while idle"
+        default y
+        help
+            Open /xiaozhi/v1/ after activation so the companion dashboard can
+            send dance, stop, and game commands without a wake word. Ending a
+            voice turn keeps the socket. Unexpected closes reconnect with backoff.
+            Deep sleep still disconnects (ResetProtocol suppresses reconnect).
+
+    config COMPANION_HEARTBEAT_INTERVAL_S
+        int "Companion heartbeat interval (seconds)"
+        depends on COMPANION_KEEP_CHANNEL
+        default 30
+        range 10 90
+        help
+            Send an unsolicited pong this often so the server does not idle-close
+            a silent READY session when no dashboard viewer is connected.
+endmenu
+
 menu "TAIJIPAI_S3_CONFIG"
     depends on BOARD_TYPE_TAIJI_PI_S3
     choice I2S_TYPE_TAIJIPI_S3

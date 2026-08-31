@@ -79,7 +79,7 @@ void Otto::AttachServos() {
 void Otto::DetachServos() {
     for (int i = 0; i < SERVO_COUNT; i++) {
         if (servo_pins_[i] != -1) {
-            servo_[i].Detach();
+            servo_[i].StopPwm();
         }
     }
 }
@@ -323,8 +323,9 @@ void Otto::Jump(float steps, int period) {
 //--    * T : Period
 //--    * Dir: Direction: FORWARD / BACKWARD
 //--    * amount: arm swing amplitude; 0 disables arm swing
+//--    * amplitude: hip/foot oscillator amplitude in degrees (default 30)
 //---------------------------------------------------------
-void Otto::Walk(float steps, int period, int dir, int amount) {
+void Otto::Walk(float steps, int period, int dir, int amount, int amplitude) {
     //-- Oscillator parameters for walking
     //-- Hip sevos are in phase
     //-- Feet servos are in phase
@@ -332,7 +333,10 @@ void Otto::Walk(float steps, int period, int dir, int amount) {
     //--      -90 : Walk forward
     //--       90 : Walk backward
     //-- Feet servos also have the same offset (for tiptoe a little bit)
-    int A[SERVO_COUNT] = {30, 30, 30, 30, 0, 0};
+    if (amplitude <= 0) {
+        amplitude = 30;
+    }
+    int A[SERVO_COUNT] = {amplitude, amplitude, amplitude, amplitude, 0, 0};
     int O[SERVO_COUNT] = {0, 0, 5, -5, HAND_HOME_POSITION - 90, HAND_HOME_POSITION};
     double phase_diff[SERVO_COUNT] = {0, 0, DEG2RAD(dir * -90), DEG2RAD(dir * -90), 0, 0};
 

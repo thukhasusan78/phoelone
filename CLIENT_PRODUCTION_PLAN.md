@@ -1,6 +1,6 @@
 # Mickey Client Production Plan (ESP32 firmware)
 
-**Status:** P0 leftovers (hands/GPIO 12, servo hold, JSON ping, `mickey` OTA identity) and branding/OTA URL are **Done**. Sensor work has not started.  
+**Status:** P0 leftovers (hands/GPIO 12, servo hold, JSON ping, `mickey` OTA identity) and branding/OTA URL are **Done**. MPU6050 + TTP223 SensorTask, pet notify, idle sway/step, companion WebSocket keepalive, and low-battery motion inhibit are **Done**. Light sensor is not started.  
 **Date:** 2026-08-24  
 **Upstream compared:** [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) `main` (2026-08). This tree is a XiaoZhi fork; core setup already exists. See [§12](#12-xiaozhi-first-boot-parity-vs-78xiaozhi-esp32).  
 **Repo:** [thukhasusan78/phoelone](https://github.com/thukhasusan78/phoelone) — board profile `mickey` (no-camera, no-hands), chip ESP32-S3 N16R8, ESP-IDF v6.0.2.  
@@ -48,14 +48,14 @@ The backend is a remote FastAPI service. Treat the JSON/MCP shapes in §4 as a f
 
 ### 1.2 What is stubbed or unsafe
 
-- MPU6050 / light / touch: MCP tools return `wired: false` and never touch hardware. **No pins in `config.h`.**
-- `NON_CAMERA_VERSION_CONFIG`: `i2c_sda_pin` / `i2c_scl_pin` = `GPIO_NUM_NC`.
+- MPU6050 (SDA 41 / SCL 42 / INT 40) and TTP223 (GPIO 47): SensorTask samples hardware. MCP IMU/touch return live JSON (`wired:true`). Light still `wired:false`.
+- `NON_CAMERA_VERSION_CONFIG`: `i2c_sda_pin` / `i2c_scl_pin` = GPIO **41/42**.
 - Camera-variant I2C (GPIO 15/16) is **speaker BCLK/LRCK** on this robot — never reuse.
 - Hands: **Done.** `left_hand_pin` / `right_hand_pin` = `GPIO_NUM_NC`. GPIO **12 is LCD CS only**. Hand tools return `Error: this action requires hand servos`.
 - `self.otto.stop`: **Done.** Cooperative stop (no `vTaskDelete`); oscillator re-attach holds PWM; `Home()` always reapplies 90°.
 - JSON `ping`: **Done.** `OnIncomingJson` replies with `pong`; no `Unknown message type: ping`.
-- No idle fidget task. XiaoZhi is session-based: wake → `OpenAudioChannel` → talk → close → statue.
-- No low-battery motion inhibit (ADC + charge GPIO exist; policy does not).
+- Idle director: **Done.** `mickey_behavior.cc` face GIFs in `kDeviceStateIdle`; **body motion only after 60 s inactivity**, then slow `swing` plus occasional reduced `walk`. Wake word, pet, pickup, fall, dashboard `self.otto.*`, and deep sleep preempt via `OttoCancelFidget()`. Companion keepalive (`CONFIG_COMPANION_KEEP_CHANNEL`) keeps `/xiaozhi/v1/` open while idle so the dashboard can send MCP without a wake word. Deep sleep still closes the socket.
+- Low-battery motion inhibit: **Done.** Below NVS `mickey/low_bat_pct` (default 15%) and not charging: reject walk/jump/dance/fidget (home/stop still work), dim backlight, `sleepy` face, `OGG_LOW_BATTERY` on enter and every 10 min.
 - Board type: **Done.** `config.json` `"type"` / `"name"` = `mickey`; Kconfig `BOARD_TYPE_MICKEY`; OTA POST `board.type` is `mickey`.
 - SoftAP branding: **Done.** AP/hostname prefix `Mickey` in `wifi_board.cc`.
 - Production OTA URL: **Done.** `CONFIG_OTA_URL=https://phoelone.thukha.online/xiaozhi/ota/`.
@@ -63,7 +63,7 @@ The backend is a remote FastAPI service. Treat the JSON/MCP shapes in §4 as a f
 
 ### 1.3 EMO constraint (firmware-owned)
 
-Idle life **must run with the WebSocket closed**. Cloud is optional for talking about a pet; flinch, blink, and freeze-on-pickup are local.
+Idle personality (flinch, blink, freeze-on-pickup) **must still run locally** even if the WebSocket is closed. The companion keepalive socket is optional for dashboard dance/RPS; it is not the heartbeat of the body.
 
 ---
 
@@ -77,7 +77,7 @@ Idle life **must run with the WebSocket closed**. Cloud is optional for talking 
 | LCD backlight | 3 |
 | Mic WS / SCK / DIN | 4 / 5 / 6 |
 | Speaker DOUT / BCLK / LRCK | 7 / **15** / **16** |
-| LCD MOSI / CLK / DC / RST / CS | 10 / 9 / 46 / 11 / **12** |
+| LCD MOSI / CLK / DC / RST / CS | 10 / 9 / 46 / 11 / **GND** (firmware `GPIO_NUM_NC`; do not drive GPIO 12) |
 | Left leg / left foot | 17 / 18 |
 | Right foot / right leg | 38 / 39 |
 | Charge detect | 21 |
@@ -94,7 +94,7 @@ Reject these for MPU / light / touch:
 
 Set `left_hand_pin` and `right_hand_pin` to `GPIO_NUM_NC` **or** `#define OTTO_HAS_HANDS 0` so `has_hands_ == false`.
 
-- GPIO 12 stays **display CS only**. Never attach an LEDC servo channel to it.
+- LCD CS is strapped to GND. `display_cs_pin` is `GPIO_NUM_NC`. GPIO 12 is unused; do not attach an LEDC servo to it unless you have confirmed it is free.
 - GPIO 8 becomes free **after** hands are NC. Do not assign 8 to a sensor until that change is flashed and verified.
 - Hand MCP actions must keep returning the existing error string (`错误：此动作需要手部舵机支持` or the English equivalent if you localize later).
 
@@ -133,17 +133,19 @@ If the modules are **already soldered** to other **free** pins (13, 45, 48, 1, 2
 
 ## 3. Sensor firmware architecture
 
-### 3.1 Today (stubs)
+### 3.1 Today
 
-**File:** `main/boards/mickey/otto_controller.cc` → `RegisterMcpTools()`.
+**File:** `main/boards/mickey/otto_controller.cc` → `RegisterMcpTools()` plus `mickey_sensors.cc`.
 
 | Tool | Current body |
 |------|----------------|
-| `self.mickey.imu.get_reading` | Immediate JSON `wired:false`, reason I2C NC |
-| `self.mickey.light.get_level` | Immediate JSON `wired:false` |
-| `self.mickey.touch.get_state` | Immediate JSON `wired:false` |
+| `self.mickey.imu.get_reading` and `self.phoe_lone.imu.get_reading` | Snapshot JSON `wired:true` (or `ok:false` / `i2c_nack`) |
+| `self.mickey.light.get_level` and `self.phoe_lone.light.get_level` | Immediate JSON `wired:false` |
+| `self.mickey.touch.get_state` and `self.phoe_lone.touch.get_state` | Snapshot JSON `wired:true`, `touched` / `count` / `ms_held` |
 
-No driver, no task, no ISR, no NVS thresholds.
+The VPS catalog and Gemini fallback use `self.phoe_lone.*`. Firmware registers both names so either call works.
+
+SensorTask + TTP223 ISR + MPU WHO_AM_I are implemented. Light is still unwired. No NVS thresholds yet.
 
 ### 3.2 Target task graph
 
@@ -276,7 +278,7 @@ Envelope:
   "type": "mcp",
   "payload": {
     "jsonrpc": "2.0",
-    "method": "notifications/mickey.event",
+    "method": "notifications/phoe_lone.event",
     "params": {
       "event": "pet",
       "ts_ms": 1710000000000,
@@ -294,7 +296,7 @@ Envelope:
 - During `kDeviceStateSpeaking` / music: send **`fall` only**; drop `pet`.
 - Always run local fall stop first.
 
-The VPS currently **drops** `notifications/*`. Local behavior must not wait for the server. After the backend lands its handler, the same firmware notify path starts working with no second firmware change if the JSON matches.
+The VPS handles `notifications/phoe_lone.event` only (`pickup` | `putdown` | `fall` | `pet` | `bright` | `dark`). Unknown methods are logged and dropped. Local behavior must not wait for the server.
 
 ---
 
@@ -401,7 +403,7 @@ Implemented in `main/boards/mickey/` (no VPS patch copy required):
 
 | Patch | Files | Effect |
 |-------|-------|--------|
-| `001-oscillator-keep-hold.patch` | `oscillator.cc` | Re-`Attach` must not `ledc_stop`; refresh `Write(pos_)` |
+| `001-oscillator-keep-hold.patch` | `oscillator.cc` | Re-`Attach` must not `ledc_stop`; `Detach` holds PWM; `StopPwm` only for sleep |
 | `002-home-force-stance.patch` | `otto_movements.cc` | `Home()` always reapplies 90° even if resting |
 | `003-stop-cooperative-home.patch` | `otto_controller.cc` | Stop = flag + drain queue + `ACTION_HOME`; **no** `vTaskDelete` |
 
@@ -416,16 +418,14 @@ GitHub `self.otto.stop` today deletes the task, then a new `ActionTask` calls `A
 
 ### 6.3 Low battery (P0.4)
 
-`PowerManager` already polls ADC 1 Hz and charge GPIO 21.
+**Done.** `PowerManager` polls ADC 1 Hz and charge GPIO. If level ≤ NVS `mickey/low_bat_pct` (default 15) and not charging:
 
-Add: if level &lt; threshold (start ~15%, NVS-tunable) and not charging:
+- Reject `QueueAction` / fidget / `servo_sequences` except home/stop (`Error: battery low; connect a charger`).
+- Play `Lang::Sounds::OGG_LOW_BATTERY` on enter and every 10 minutes while low.
+- Dim backlight (non-permanent); `SetEmotion("sleepy")`; home.
+- Charging clears inhibit and restores brightness.
 
-- Reject `QueueAction` except home/stop.
-- Play `Lang::Sounds` low battery OGG once per N minutes.
-- Dim backlight; `SetEmotion("sleepy")`.
-- Do not walk/jump/showcase.
-
-Fall (IMU) uses the same inhibit path as an emergency stop.
+Fall (IMU) still emergency-stops servos independently.
 
 ### 6.4 Motion vs SensorTask
 
@@ -437,7 +437,7 @@ Fall (IMU) uses the same inhibit path as an emergency stop.
 
 ## 7. Idle director
 
-Highest EMO ROI. **No cloud.** New module `mickey_behavior.cc`.
+Highest EMO ROI. **No cloud.** Module `mickey_behavior.cc` — **P1.1 implemented.** Runs only in `kDeviceStateIdle`; face GIFs (`SetEmotion` via `Application::Schedule`) may run after a few seconds. Body clips wait **60 s of inactivity** then use slow `swing` and occasional reduced-amplitude `walk` via `OttoTryQueueFidget` (happy face; IMU self-motion masked). Wake word / leave-idle, pet, pickup, fall, `self.otto.action`, `self.otto.servo_sequences`, and `OttoPrepareForSleep` call `OttoCancelFidget()`. Server `llm` emotion yields the director for 30 s.
 
 ### 7.1 When it runs
 
@@ -446,10 +446,10 @@ Highest EMO ROI. **No cloud.** New module `mickey_behavior.cc`.
 
 ### 7.2 Loop
 
-Every **8–20 s** (random):
+Face GIFs every **8–20 s** while idle. Body clips only after **60 s** inactivity, then every **20–45 s**:
 
 - Blink / swap GIF: `staticstate`, `winking`, `sleepy` (weights).
-- Or 1–2° look: `servo_sequences` equivalent **internal** call, duration &lt; 800 ms, then home. Do not use LLM tools.
+- Body: slow `swing` (height 20, period 2800 ms, `happy` face) or occasional reduced `walk` (amplitude 18, period 3200 ms). No tiptoe/shake-leg/bend. MPU6050 pickup/shake and tilt/bounce fall are masked while fidgeting (plus 400 ms grace); true freefall still homes.
 - Bound speed and queue depth **1**.
 
 ### 7.3 Preempt immediately
@@ -462,11 +462,11 @@ On preempt: `stop_requested` on fidget only (not a full robot panic unless fall)
 
 If `type: llm` arrives while a session is open, show that GIF for **30 s**, then resume the cycle.
 
-### 7.5 Pickup / light (P1, after sensors)
+### 7.5 Pickup / light
 
-- Pickup: freeze fidget; `SetEmotion` “surprised” or similar.
-- Putdown: resume after 1 s stable.
-- Dark bucket: sleepy + dim; do not fidget large motions in the dark.
+- Pickup: freeze fidget; `SetEmotion` “surprised”. **Done.**
+- Putdown: resume after ~300 ms stable. **Done.**
+- Dark bucket: sleepy + dim; do not fidget large motions in the dark. (Light still unwired.)
 
 ### 7.6 Music dance (P1 optional)
 
@@ -522,25 +522,25 @@ Tick these in firmware PRs. Server checkboxes live in `BACKEND_PRODUCTION_PLAN.m
 - [x] **P0.1** Apply oscillator / home / cooperative-stop patches. `self.otto.stop` does not `vTaskDelete`. Pose holds 30 s with 5 V servos. **Done** (hardware 30 s hold still needs a bench check).
 - [x] **P0.2** Hands NC / no-camera SKU. GPIO 12 never LEDC. Hand tools error in English. **Done**.
 - [x] **P0.3** Board lives in `main/boards/mickey/` with unique `BOARD_TYPE` / `config.json` `"type": "mickey"`. **Done**.
-- [ ] **P0.4** Low battery: no walk/jump; OGG; dim; home.
+- [x] **P0.4** Low battery: no walk/jump; OGG; dim; home.
 - [x] **P0.6** `ping` handler; `pong` JSON; no WARN log. **Done**.
 - [ ] **P0.7** Measure: opcode ping vs 120 s timer; document result in `docs/websocket.md`.
 - [ ] **P0.8** Wake-word abort during TTS **and** during a long music stream (AFE wake word enabled in speaking).
-- [ ] **P0.S1** Real pins in `config.h` (not NC) matching solder.
-- [ ] **P0.S2** MPU WHO_AM_I in serial; MCP `wired:true` with live ax/ay/az.
-- [ ] **P0.S3** Touch ISR + 30–50 ms debounce; pet GIF with **WS closed** &lt; 200 ms.
+- [x] **P0.S1** Real pins in `config.h` (not NC) matching solder.
+- [x] **P0.S2** MPU WHO_AM_I in serial; MCP `wired:true` with live ax/ay/az. **Done in firmware; bench WHO_AM_I still required.**
+- [x] **P0.S3** Touch ISR + 30–50 ms debounce; pet GIF with **WS closed** &lt; 200 ms. **Done in firmware; hardware timing still required.**
 - [ ] **P0.S4** Light buckets change with flashlight; MCP JSON.
-- [ ] **P0.S7** Fall/tip: servos stop &lt; 200 ms **before** any notify.
-- [ ] Notify path implemented (even if VPS ignores it until their P0.S5).
+- [x] **P0.S7** Fall/tip: servos stop &lt; 200 ms **before** any notify. **Done in firmware; tilt timing still required.**
+- [x] Notify path implemented (`pet` / `pickup` / `putdown` / `fall` / `sleep`).
 - [ ] Audio/wake-word watchdog-clean during I2C.
-- [ ] Unplug IMU → `ok:false`, not fake 1 g forever without `ok`.
+- [x] Unplug IMU → `ok:false`, not fake 1 g forever without `ok`.
 
 ### P1 — EMO presence
 
-- [ ] **P1.1** Idle director 8–20 s fidget in `kDeviceStateIdle`.
+- [x] **P1.1** Idle director 8–20 s fidget in `kDeviceStateIdle`. **Updated:** face early; body after 60 s, slow sway + occasional step; IMU masked during fidget.
 - [ ] **P1.2** Map incoming `llm` emotion to a **short** local motion (cap duration; never block Opus). Optional table in behavior module.
 - [ ] **P1.3** Idle GIF cycle `staticstate` / `sleepy` / `winking`.
-- [ ] **P1.4** Pickup freezes fidget; putdown resumes.
+- [x] **P1.4** Pickup freezes fidget; putdown resumes.
 - [ ] **P1.5** Dark → sleepy + dim; bright → wake face.
 - [ ] **P1.6** Do not break abort-during-music. Optional: only dance if MCP action requested.
 
@@ -577,13 +577,13 @@ Out of firmware scope: 4G, MQTT voice, LivingAI assets, Python. SmartConfig is a
 
 | Path | Change |
 |------|--------|
-| `main/boards/mickey/config.h` | **Done:** hands NC; later: sensor pins |
+| `main/boards/mickey/config.h` | **Done:** hands NC; MPU 41/42/40; TTP223 47 |
 | `main/boards/mickey/oscillator.cc` | **Done:** hold on re-Attach |
 | `main/boards/mickey/otto_movements.cc` | **Done:** Home always reapplies; cooperative abort |
-| `main/boards/mickey/otto_controller.cc` | **Done:** cooperative stop; later: MCP live sensors |
-| `main/boards/mickey/mickey_sensors.*` | **New** (not started) |
-| `main/boards/mickey/mickey_behavior.*` | **New** (P1) |
-| `main/application.cc` | **Done:** `ping` / `pong` |
+| `main/boards/mickey/otto_controller.cc` | **Done:** cooperative stop; fidget source flag; IMU/touch MCP snapshots |
+| `main/boards/mickey/mickey_sensors.*` | **Done:** SensorTask, MPU, TTP223, notify |
+| `main/boards/mickey/mickey_behavior.*` | **Done:** 60 s idle body gate; pet/IMU hooks |
+| `main/application.cc` | **Done:** `ping` / `pong`; `AddStateChangeListener` + `llm` emotion yield hook |
 | `main/protocols/websocket_protocol.cc` | Verified: last-incoming updates on TEXT/BINARY `OnData` only |
 | `docs/websocket.md` | **Done:** document `ping`/`pong` |
 | `main/boards/mickey/` | **Done:** P0.3 / C-OTA.3 identity |
@@ -595,9 +595,9 @@ Out of firmware scope: 4G, MQTT voice, LivingAI assets, Python. SmartConfig is a
 ### First firmware slices (order)
 
 1. **Done.** Hands NC + stop patches + ping/pong + `mickey` identity + branding/OTA URL.  
-2. `config.h` pins + MPU WHO_AM_I + MCP IMU.  
-3. Touch + light + local pet/fall + notify emit.  
-4. Idle director.  
+2. ~~`config.h` pins + MPU WHO_AM_I + MCP IMU.~~ **Done.**  
+3. ~~Touch + local pet/fall + notify emit.~~ **Done** (light still later).  
+4. ~~Idle director.~~ **Done** (P1.1; body motion now 60 s + slow sway/step).  
 5. ~~`mickey` board + OTA identity.~~ **Done** (landed with slice 1).  
 6. First-boot UX: idle re-pair, NVS wipe gesture, activation-code hardware test (§12).
 

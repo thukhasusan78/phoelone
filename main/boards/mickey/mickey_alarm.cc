@@ -3,11 +3,11 @@
 #include <inttypes.h>
 #include <time.h>
 
-#include <cJSON.h>
 #include <driver/rtc_io.h>
 #include <esp_idf_version.h>
 #include <esp_log.h>
 #include <esp_sleep.h>
+#include <cJSON.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -18,7 +18,13 @@
 #include "device_state.h"
 #include "display.h"
 #include "mcp_server.h"
+#include "mickey_sensors.h"
+#include "otto_controller.h"
 #include "settings.h"
+
+#include <driver/gpio.h>
+#include <esp_system.h>
+#include <esp_wifi.h>
 
 #define TAG "MickeyAlarm"
 
@@ -29,10 +35,137 @@ constexpr int kMorningIdleHoldTicks = 3;
 constexpr int kSleepIdleWaitMs = 3000;
 constexpr int kSleepTaskStack = 4096;
 constexpr UBaseType_t kSleepTaskPriority = 3;
-}  // namespace
+constexpr const char* kWakeSrcKey = "wake_src";
+constexpr int kWakeSrcNone = 0;
+constexpr int kWakeSrcTimer = 1;
+constexpr int kWakeSrcButton = 2;
+constexpr int kWakeSrcPet = 3;
 
-extern void OttoPrepareForSleep();
-extern void OttoQueueMorningWake();
+bool TouchPinActive() {
+    int level = gpio_get_level(MICKEY_TOUCH_PIN);
+#if MICKEY_TOUCH_ACTIVE_HIGH
+    return level == 1;
+#else
+    return level == 0;
+#endif
+}
+
+bool BootButtonHeld() { return gpio_get_level(BOOT_BUTTON_GPIO) == 0; }
+
+void PersistWakeSrc(int src) {
+    Settings settings(kNvsNs, true);
+    settings.SetInt(kWakeSrcKey, src);
+}
+
+int ConsumeWakeSrc() {
+    Settings settings(kNvsNs, true);
+    int src = settings.GetInt(kWakeSrcKey, kWakeSrcNone);
+    if (src != kWakeSrcNone) {
+        settings.SetInt(kWakeSrcKey, kWakeSrcNone);
+    }
+    return src;
+}
+
+enum class SleepWakeResult { kTimer, kButton, kPet };
+
+gpio_int_type_t TouchWakeIntr() {
+#if MICKEY_TOUCH_ACTIVE_HIGH
+    return GPIO_INTR_HIGH_LEVEL;
+#else
+    return GPIO_INTR_LOW_LEVEL;
+#endif
+}
+
+esp_err_t EnableGpioLightSleepWake() {
+    esp_err_t err = gpio_wakeup_enable(MICKEY_TOUCH_PIN, TouchWakeIntr());
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Touch GPIO wakeup enable failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    err = gpio_wakeup_enable(BOOT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Boot GPIO wakeup enable failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    return esp_sleep_enable_gpio_wakeup();
+}
+
+// GPIO 47 is not an RTC pad, so a level wake starts the CPU immediately.
+// Stay awake only if the touch stays asserted for the pet-wake hold.
+bool ConfirmTouchSleepHold() {
+    const int64_t need_us = static_cast<int64_t>(MICKEY_TOUCH_SLEEP_HOLD_MS) * 1000;
+    int64_t start = esp_timer_get_time();
+    while ((esp_timer_get_time() - start) < need_us) {
+        if (BootButtonHeld()) {
+            return false;
+        }
+        if (!TouchPinActive()) {
+            ESP_LOGI(TAG, "Sleep touch released before %d ms hold", MICKEY_TOUCH_SLEEP_HOLD_MS);
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return TouchPinActive();
+}
+
+SleepWakeResult LightSleepUntilWake(uint64_t sleep_us) {
+    const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(sleep_us);
+    ESP_LOGI(TAG, "GPIO %d is not an RTC pad; using light sleep so a %d ms pet can wake Mickey",
+             static_cast<int>(MICKEY_TOUCH_PIN), MICKEY_TOUCH_SLEEP_HOLD_MS);
+
+    esp_err_t wifi_err = esp_wifi_stop();
+    if (wifi_err != ESP_OK && wifi_err != ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGW(TAG, "esp_wifi_stop: %s", esp_err_to_name(wifi_err));
+    }
+
+    while (true) {
+        int64_t remaining = deadline_us - esp_timer_get_time();
+        if (remaining <= 0) {
+            return SleepWakeResult::kTimer;
+        }
+
+        ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(remaining)));
+        esp_err_t gpio_wake = EnableGpioLightSleepWake();
+        if (gpio_wake != ESP_OK) {
+            ESP_LOGW(TAG, "GPIO light-sleep wake unavailable (%s); timer only",
+                     esp_err_to_name(gpio_wake));
+        }
+
+        ESP_LOGI(TAG, "Light sleep, remaining %" PRId64 " us", remaining);
+        esp_err_t sleep_err = esp_light_sleep_start();
+        if (sleep_err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_light_sleep_start: %s", esp_err_to_name(sleep_err));
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
+        uint32_t causes = esp_sleep_get_wakeup_causes();
+        bool timer = (causes & (1UL << ESP_SLEEP_WAKEUP_TIMER)) != 0;
+        bool gpio = (causes & (1UL << ESP_SLEEP_WAKEUP_GPIO)) != 0;
+#else
+        esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        bool timer = cause == ESP_SLEEP_WAKEUP_TIMER;
+        bool gpio = cause == ESP_SLEEP_WAKEUP_GPIO;
+#endif
+        if (timer || (deadline_us - esp_timer_get_time()) <= 0) {
+            return SleepWakeResult::kTimer;
+        }
+        if (gpio || BootButtonHeld() || TouchPinActive()) {
+            if (BootButtonHeld()) {
+                return SleepWakeResult::kButton;
+            }
+            if (TouchPinActive() && ConfirmTouchSleepHold()) {
+                ESP_LOGI(TAG, "Pet-to-wake hold confirmed");
+                return SleepWakeResult::kPet;
+            }
+            if (BootButtonHeld()) {
+                return SleepWakeResult::kButton;
+            }
+        }
+    }
+}
+}  // namespace
 
 MickeyAlarm& MickeyAlarm::GetInstance() {
     static MickeyAlarm instance;
@@ -41,7 +174,7 @@ MickeyAlarm& MickeyAlarm::GetInstance() {
 
 bool MickeyAlarm::IsClockSynced() const {
     time_t now = time(nullptr);
-    struct tm local {};
+    struct tm local{};
     localtime_r(&now, &local);
     return (local.tm_year + 1900) >= kMinValidYear;
 }
@@ -58,7 +191,7 @@ bool MickeyAlarm::ComputeNextEpoch(int hour, int minute, int64_t* next_epoch) co
     }
 
     time_t now = time(nullptr);
-    struct tm local {};
+    struct tm local{};
     localtime_r(&now, &local);
     local.tm_hour = hour;
     local.tm_min = minute;
@@ -142,7 +275,8 @@ std::string MickeyAlarm::RequestDeepSleep(int hour, int minute, int seconds_from
         }
 
         if (!IsClockSynced()) {
-            return "{\"ok\":false,\"error\":\"clock not synced; wait for activation or pass seconds\"}";
+            return "{\"ok\":false,\"error\":\"clock not synced; wait for activation or pass "
+                   "seconds\"}";
         }
         int64_t next_epoch = 0;
         if (!ComputeNextEpoch(use_hour, use_minute, &next_epoch)) {
@@ -165,8 +299,8 @@ std::string MickeyAlarm::RequestDeepSleep(int hour, int minute, int seconds_from
     sleep_requested_ = true;
     ESP_LOGI(TAG, "Deep sleep requested, wake in %" PRIu64 " us", sleep_us);
 
-    BaseType_t ok = xTaskCreate(SleepTask, "mickey_sleep", kSleepTaskStack, this, kSleepTaskPriority,
-                                nullptr);
+    BaseType_t ok =
+        xTaskCreate(SleepTask, "mickey_sleep", kSleepTaskStack, this, kSleepTaskPriority, nullptr);
     if (ok != pdPASS) {
         sleep_requested_ = false;
         ClearPendingMorning();
@@ -184,6 +318,10 @@ void MickeyAlarm::SleepTask(void* arg) {
 
 void MickeyAlarm::EnterDeepSleepOnTask() {
     auto& app = Application::GetInstance();
+
+    // Tell the companion dashboard we are going to sleep before the socket dies.
+    MickeySensorsEmitEvent("sleep");
+    vTaskDelay(pdMS_TO_TICKS(400));
 
     app.Schedule([]() {
         auto& application = Application::GetInstance();
@@ -211,6 +349,7 @@ void MickeyAlarm::EnterDeepSleepOnTask() {
     }
 
     OttoPrepareForSleep();
+    MickeySensorsPrepareForSleep();
 
     auto& board = Board::GetInstance();
     Display* display = board.GetDisplay();
@@ -228,23 +367,23 @@ void MickeyAlarm::EnterDeepSleepOnTask() {
 }
 
 void MickeyAlarm::ArmAndSleep(uint64_t sleep_us) {
-    ESP_LOGI(TAG, "Arming RTC timer for %" PRIu64 " us", sleep_us);
-    ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(sleep_us));
+    ESP_LOGI(TAG, "Arming sleep for %" PRIu64 " us", sleep_us);
 
-    if (rtc_gpio_is_valid_gpio(BOOT_BUTTON_GPIO)) {
-        esp_err_t ext0 = esp_sleep_enable_ext0_wakeup(BOOT_BUTTON_GPIO, 0);
-        if (ext0 == ESP_OK) {
-            rtc_gpio_pullup_en(BOOT_BUTTON_GPIO);
-            rtc_gpio_pulldown_dis(BOOT_BUTTON_GPIO);
-            esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
-            ESP_LOGI(TAG, "EXT0 wake enabled on GPIO %d", static_cast<int>(BOOT_BUTTON_GPIO));
-        } else {
-            ESP_LOGW(TAG, "EXT0 wake not available: %s", esp_err_to_name(ext0));
-        }
+    SleepWakeResult result = LightSleepUntilWake(sleep_us);
+    switch (result) {
+        case SleepWakeResult::kPet:
+            PersistWakeSrc(kWakeSrcPet);
+            break;
+        case SleepWakeResult::kButton:
+            PersistWakeSrc(kWakeSrcButton);
+            break;
+        case SleepWakeResult::kTimer:
+        default:
+            PersistWakeSrc(kWakeSrcTimer);
+            break;
     }
-
-    ESP_LOGI(TAG, "Entering deep sleep");
-    esp_deep_sleep_start();
+    ESP_LOGI(TAG, "Leaving sleep, restart wake_src=%d", static_cast<int>(result));
+    esp_restart();
 }
 
 bool MickeyAlarm::WokeFromTimer() const {
@@ -266,12 +405,28 @@ bool MickeyAlarm::WokeFromExt0() const {
 }
 
 void MickeyAlarm::StartMorningWatcher() {
-    if (WokeFromExt0() && !WokeFromTimer()) {
+    int wake_src = ConsumeWakeSrc();
+    if (wake_src == kWakeSrcPet) {
+        ClearPendingMorning();
+        ESP_LOGI(TAG, "Woke from a %d ms pet hold; skipping morning routine",
+                 MICKEY_TOUCH_SLEEP_HOLD_MS);
+        auto display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+            display->SetPowerSaveMode(false);
+            display->SetEmotion("happy");
+        }
+        auto backlight = Board::GetInstance().GetBacklight();
+        if (backlight != nullptr) {
+            backlight->RestoreBrightness();
+        }
+        return;
+    }
+    if (wake_src == kWakeSrcButton || (WokeFromExt0() && !WokeFromTimer())) {
         ClearPendingMorning();
         ESP_LOGI(TAG, "Woke from boot button; skipping morning routine");
         return;
     }
-    if (!WokeFromTimer()) {
+    if (wake_src != kWakeSrcTimer && !WokeFromTimer()) {
         return;
     }
 

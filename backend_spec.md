@@ -1,30 +1,26 @@
 # Mickey Backend Specification
 
-This document is the XiaoZhi **wire protocol** (OTA, WebSocket, MCP, audio framing) derived from the ESP-IDF client (`otto-robot` / Mickey). How **this** FastAPI repo actually runs (Silero VAD, Gemini Live, local music) is in [README.md](README.md). Do **not** invent extra device-side APIs.
+This document is the XiaoZhi **wire protocol** (OTA, WebSocket, MCP, audio framing) as implemented by the Mickey ESP-IDF client (`main/boards/mickey/`). How the FastAPI repo runs (Silero VAD, Gemini Live, companion dashboard) is in [phoelone-backend](https://github.com/thukhasusan78/phoelone-backend). Do **not** invent extra device-side APIs.
 
-**Primary transport for Mickey:** WebSocket (stock otto-robot). MQTT + UDP is optional and must still be implemented if the OTA JSON advertises it.
+**Primary transport for Mickey:** WebSocket. Companion builds (`CONFIG_COMPANION_KEEP_CHANNEL`) **prefer WebSocket even if OTA also includes `mqtt`**. Omit `mqtt` from production OTA JSON anyway.
 
-**Firmware profile:** `python scripts/build.py otto-robot --name otto-robot`  
+**Firmware profile:** `python scripts/build.py mickey --name mickey --language en-US`  
 **Chip:** ESP32-S3, 16 MB flash, 8 MB octal PSRAM  
-**Default OTA URL (menuconfig `CONFIG_OTA_URL`):** `https://api.tenclass.net/xiaozhi/ota/`  
-Point the device at this VPS by setting **only** `CONFIG_OTA_URL` (or NVS `wifi.ota_url`) to:
+**Board identity:** `board.type` / `board.name` = **`mickey`** (legacy OTA identities `otto-robot` and `phoe-lone` are still accepted by the VPS).  
+**Baked OTA URL:** `https://phoelone.thukha.online/xiaozhi/ota/` in `main/boards/mickey/config.json`.
 
-```
-http://<VPS-PUBLIC-IP-OR-DOMAIN>:8000/xiaozhi/ota/
-```
-
-Prefer HTTPS in production (`https://<domain>/xiaozhi/ota/`).
+Point a lab device at another host with NVS `wifi.ota_url` or a one-off `sdkconfig` `CONFIG_OTA_URL`. Prefer HTTPS in production.
 
 ---
 
 ## 1. System architecture
 
 ```
-ESP32 (otto-robot firmware)
+ESP32 (mickey firmware)
   │  boot
-  ├─ HTTP POST  /xiaozhi/ota/     →  writes websocket/mqtt NVS, optional firmware URL
-  ├─ WebSocket  ws(s)://host/xiaozhi/v1/   →  hello, Opus, JSON, MCP
-  └─ optional MQTT + UDP          →  same JSON as WS; audio on UDP/AES-CTR
+  ├─ HTTP POST  /xiaozhi/ota/     →  writes websocket NVS, optional firmware URL
+  ├─ WebSocket  wss://host/xiaozhi/v1/   →  hello, Opus, JSON, MCP, ping/pong
+  └─ companion keepalive keeps the socket open in idle (no listen/start)
 
 VPS backend (you implement)
   ├─ OTA HTTP service
@@ -86,8 +82,8 @@ After Wi-Fi connects, `Ota::CheckVersion()` (`main/ota.cc`) POSTs (or GETs if bo
   "ota": { "label": "ota_0" },
   "display": { "monochrome": false, "width": 240, "height": 240 },
   "board": {
-    "type": "otto-robot",
-    "name": "otto-robot",
+    "type": "mickey",
+    "name": "mickey",
     "manufacturer": "<BOARD_MANUFACTURER>",
     "ssid": "HomeWifi",
     "rssi": -45,
@@ -149,7 +145,9 @@ The device parses these **top-level objects**. Unknown keys are ignored. String/
 | `firmware.version` + `firmware.url` | Recommended | If `version` is **newer** than running firmware, device starts OTA download. Use a dummy version `0.0.0` and a non-downloadable URL to skip upgrades. `force: 1` forces install even if not newer. |
 | `activation` | Optional | If `code` is present, device shows activation UI and plays digit sounds. Omit this object for an always-open local/VPS server. |
 
-**Do not** put `CONFIG_OTA_URL` into otto-robot `config.json`. Board identity / OTA channel stays `otto-robot`.
+**Do not** advertise MQTT in production OTA. Companion Mickey prefers WebSocket if both sections exist.
+
+Mickey does **not** register `self.set_press_to_talk` (no hold-to-talk / tap-to-talk tool). Volume, brightness, theme, and trims remain.
 
 ---
 
@@ -384,6 +382,16 @@ Plays vibration OGG and shows status/message/emotion.
 
 Shows `payload` JSON as a system chat line. Otto default builds may not enable this.
 
+#### ping (keepalive)
+
+```json
+{ "session_id": "xxx", "type": "ping", "ts_ms": 1710000000000 }
+```
+
+Device replies `{ "type": "pong", "ts_ms": <echo or device clock> }`. Send every ~30 s **including during TTS/music** so the device 120 s idle timer does not fire.
+
+Mickey companion keepalive also sends **unsolicited** `pong` every `CONFIG_COMPANION_HEARTBEAT_INTERVAL_S` (default 30) while `/xiaozhi/v1/` is open in idle. Treat inbound `pong` as a known type; do not require it before the session is valid.
+
 ### 3.7 Recommended session sequence (auto mode)
 
 1. Device connects, sends `hello`.
@@ -392,7 +400,11 @@ Shows `payload` JSON as a system chat line. Otto default builds may not enable t
 4. Device sends `listen/start` + Opus.
 5. Server: ASR → `stt` → LLM (optionally MCP `tools/call`) → `llm` emotion → `tts/start` → Opus + `sentence_start` → `tts/stop`.
 6. Device returns to listening (auto) or idle (manual).
-7. Socket close → device Idle.
+7. Socket close → device Idle. With `CONFIG_COMPANION_KEEP_CHANNEL`, Mickey reconnects without `listen/start` so the dashboard can send MCP while idle.
+
+### 3.8 Companion idle socket
+
+After activation Mickey opens `/xiaozhi/v1/` and returns to `kDeviceStateIdle` with the channel still open. Deep sleep (`self.mickey.sleep.now`) emits `notifications/phoe_lone.event` with `"event":"sleep"` then closes the socket. The dashboard should show sleeping until the alarm, not a generic offline error.
 
 ---
 
@@ -438,7 +450,9 @@ Always wrap JSON-RPC in:
 { "session_id": "<from hello>", "type": "mcp", "payload": { } }
 ```
 
-`payload.jsonrpc` **must** be `"2.0"`. `payload.id` **must** be a JSON **number** (not a string). Methods starting with `notifications` are ignored.
+`payload.jsonrpc` **must** be `"2.0"`. Request/response `payload.id` **must** be a JSON **number** (not a string). JSON-RPC notifications have **no** `id`. The server handles `notifications/phoe_lone.event` (`pickup` | `putdown` | `fall` | `pet` | `sleep`) and must not send a JSON-RPC reply. Unknown notification methods are logged and dropped. Firmware does **not** emit `bright` / `dark` (no light GPIO). Params are `{ "event", "ts_ms", "imu": { "pitch", "az" } }` — no `light` object.
+
+Do **not** send `type: llm` with `confused` on fall. Firmware already homes servos and does not change the face on fall (pickup uses `surprised`). `confused` maps to `sad` on Mickey.
 
 Device replies are sent with `Protocol::SendMcpMessage` as the same envelope; `payload` is already a JSON-RPC object string.
 
@@ -473,7 +487,7 @@ Device replies are sent with `Protocol::SendMcpMessage` as the same envelope; `p
   "result": {
     "protocolVersion": "2024-11-05",
     "capabilities": { "tools": {} },
-    "serverInfo": { "name": "otto-robot", "version": "2.4.2" }
+    "serverInfo": { "name": "mickey", "version": "2.4.2" }
   }
 }
 ```
@@ -605,12 +619,9 @@ Registered by `AddUserOnlyTools`. List only with `withUserTools: true`. Do not g
 
 Snapshot/preview require `CONFIG_LV_USE_SNAPSHOT`.
 
-### 5.7 Press-to-talk (if the board constructs `PressToTalkMcpTool`)
+### 5.7 Press-to-talk
 
-#### `self.set_press_to_talk`
-
-- `mode`: `"press_to_talk"` or `"click_to_talk"`
-- Saved in NVS `vendor`/`press_to_talk`
+`self.set_press_to_talk` is registered only on boards that construct `PressToTalkMcpTool`. **Mickey does not.** The dashboard should not offer Hold-to-Talk / Tap-to-Talk for this SKU.
 
 ### 5.8 Otto / Mickey motion tools (`otto_controller.cc`)
 
@@ -739,15 +750,19 @@ Returns plain text `"moving"` or `"idle"`.
 
 Empty IP → `{ "ip": "", "connected": false }`.
 
-#### Mickey stubs (always return immediately, no I2C)
+#### Phoe Lone / Mickey sensors (live IMU + touch; light stub)
+
+Firmware registers **both** namespaces. Prefer `self.phoe_lone.*` (backend catalog). `self.mickey.*` remains as an alias for IMU/touch/light.
 
 | Name | Return JSON |
 |------|-------------|
-| `self.mickey.imu.get_reading` | `{ "wired": false, "sensor": "MPU6050", "reason": "I2C pins are GPIO_NUM_NC on otto-robot no-camera" }` |
-| `self.mickey.light.get_level` | `{ "wired": false, "sensor": "light", "reason": "no light-sensor GPIO in stock otto-robot config" }` |
-| `self.mickey.touch.get_state` | `{ "wired": false, "sensor": "touch", "reason": "no touch GPIO in stock otto-robot config" }` |
+| `self.phoe_lone.imu.get_reading` / `self.mickey.imu.get_reading` | Live MPU6050: `{ "wired": true, "sensor": "MPU6050", "ax", "ay", "az", "gx", "gy", "gz", "pitch", "roll", "temp_c", "event" }` where `event` is `still` \| `moving` \| `pickup` \| `putdown` \| `fall` \| `shake`. Fail: `{ "wired": true, "ok": false, "error": "i2c_nack" }`. |
+| `self.phoe_lone.touch.get_state` / `self.mickey.touch.get_state` | Live TTP223: `{ "wired": true, "touched", "count", "ms_held" }`. |
+| `self.phoe_lone.light.get_level` / `self.mickey.light.get_level` | Still unwired: `{ "wired": false, "sensor": "light", "reason": "..." }`. |
 
-The LLM should say the sensor is not wired yet rather than inventing readings.
+A pet may also arrive as `notifications/phoe_lone.event`. If `wired:false` or `ok:false`, say the sensor is not connected — never invent ax/lux.
+
+Mickey does **not** expose `self.set_press_to_talk`. Alarm tools are `self.mickey.alarm.set` / `.get` / `.cancel` and `self.mickey.sleep.now` (no `self.phoe_lone.alarm.*` alias).
 
 ---
 
@@ -842,6 +857,8 @@ or a bare JSON-RPC object. MCP replies are broadcast to those clients. Do not co
 8. Emotion `llm` messages.
 9. Optional MQTT/UDP §4.
 10. TLS (`wss` / `https`) and a firewall allowing 443 or 8000.
+11. JSON `ping` every 30 s during TTS/music; accept device `pong`; handle `notifications/phoe_lone.event` including `sleep`.
+12. Production OTA: `websocket` only (no `mqtt`), `board.type` `mickey`, stable bearer, `firmware.version` `0.0.0` until a real image is published.
 
 Reference client sources (do not copy cloud servers):
 
@@ -858,8 +875,9 @@ Reference client sources (do not copy cloud servers):
 
 ## 13. What this backend must not do
 
-- Do not require pin changes or a custom board type.
+- Do not require pin changes. OTA `board.type` is **`mickey`** (legacy `otto-robot` / `phoe-lone` still accepted on the VPS).
 - Do not send `type: iot` (deprecated).
 - Do not call `self.chassis.*` / `self.dog.*` / `self.electron.*` on Mickey; those belong to other boards.
-- Do not block waiting for IMU/light/touch hardware; stubs already return `wired: false`.
+- Do not call `self.set_press_to_talk` (not registered). Light MCP still returns `wired: false`.
+- Do not invent IMU/touch numbers; live tools return `wired: true` with real samples (or `ok: false` on I2C fail).
 - Do not put Python FastAPI sources in this ESP-IDF repository; deploy them on the VPS only.

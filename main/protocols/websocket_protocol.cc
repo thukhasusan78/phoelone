@@ -80,9 +80,15 @@ bool WebsocketProtocol::OpenAudioChannel() {
     Settings settings("websocket", false);
     std::string url = settings.GetString("url");
     std::string token = settings.GetString("token");
-    int version = settings.GetInt("version");
-    if (version != 0) {
-        version_ = version;
+    int stored_version = settings.GetInt("version");
+    // This product uses raw Opus v1. Ignore OTA/NVS v2/v3 framing.
+    version_ = 1;
+    if (stored_version != 1) {
+        Settings persist("websocket", true);
+        persist.SetInt("version", 1);
+        if (stored_version != 0) {
+            ESP_LOGW(TAG, "websocket.version was %d; forcing 1", stored_version);
+        }
     }
 
     error_occurred_ = false;

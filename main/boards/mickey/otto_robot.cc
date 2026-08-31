@@ -7,6 +7,7 @@
 #include <esp_log.h>
 
 #include "application.h"
+#include "assets/lang_config.h"
 #include "button.h"
 #include "codecs/no_audio_codec.h"
 #include "config.h"
@@ -16,6 +17,9 @@
 #include "led/single_led.h"
 #include "mcp_server.h"
 #include "mickey_alarm.h"
+#include "mickey_behavior.h"
+#include "mickey_sensors.h"
+#include "otto_controller.h"
 #include "otto_emoji_display.h"
 #include "power_manager.h"
 #include "system_reset.h"
@@ -23,8 +27,6 @@
 #include "wifi_board.h"
 
 #define TAG "OttoRobot"
-
-extern void InitializeOttoController(const HardwareConfig& hw_config);
 
 class OttoRobot : public WifiBoard {
 private:
@@ -125,7 +127,8 @@ private:
                     if (ret == ESP_OK) {
                         detected_pid = (pid_high << 8) | pid_low;
                         if (detected_pid != 0) {
-                            ESP_LOGI(TAG, "Detected camera (OV3660 method) PID=0x%04X (addr=0x%02X)",
+                            ESP_LOGI(TAG,
+                                     "Detected camera (OV3660 method) PID=0x%04X (addr=0x%02X)",
                                      detected_pid, addr);
                             camera_found = true;
                             i2c_master_bus_rm_device(dev_handle);
@@ -162,6 +165,34 @@ private:
     void InitializePowerManager() {
         power_manager_ = new PowerManager(hw_config_.power_charge_detect_pin,
                                           hw_config_.power_adc_unit, hw_config_.power_adc_channel);
+        power_manager_->OnLowBatteryStatusChanged([](bool low) {
+            Application::GetInstance().Schedule([low]() {
+                if (low) {
+                    OttoCancelFidget();
+                    OttoQueueHome();
+                    auto backlight = Board::GetInstance().GetBacklight();
+                    if (backlight != nullptr) {
+                        backlight->SetBrightness(15, false);
+                    }
+                    auto display = Board::GetInstance().GetDisplay();
+                    if (display != nullptr) {
+                        display->SetEmotion("sleepy");
+                    }
+                    Application::GetInstance().PlaySound(Lang::Sounds::OGG_LOW_BATTERY);
+                    ESP_LOGW(TAG, "Low battery: motion inhibited, face sleepy, backlight dim");
+                } else {
+                    auto backlight = Board::GetInstance().GetBacklight();
+                    if (backlight != nullptr) {
+                        backlight->RestoreBrightness();
+                    }
+                    ESP_LOGI(TAG, "Battery recovered; motion allowed");
+                }
+            });
+        });
+        power_manager_->OnLowBatteryRemind([]() {
+            Application::GetInstance().Schedule(
+                []() { Application::GetInstance().PlaySound(Lang::Sounds::OGG_LOW_BATTERY); });
+        });
     }
 
     void InitializeSpi() {
@@ -377,6 +408,8 @@ public:
         }
 
         InitializeOttoController();
+        InitializeMickeyBehavior();
+        InitializeMickeySensors();
         MickeyAlarm::GetInstance().RegisterMcpTools();
         MickeyAlarm::GetInstance().StartMorningWatcher();
         ws_control_server_ = nullptr;

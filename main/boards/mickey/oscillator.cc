@@ -24,6 +24,7 @@ Oscillator::Oscillator(int trim) {
     trim_ = trim;
     diff_limit_ = 0;
     is_attached_ = false;
+    pwm_active_ = false;
 
     sampling_period_ = 30;
     period_ = 2000;
@@ -42,7 +43,7 @@ Oscillator::Oscillator(int trim) {
 }
 
 Oscillator::~Oscillator() {
-    Detach();
+    StopPwm();
 }
 
 uint32_t Oscillator::AngleToCompare(int angle) {
@@ -63,13 +64,12 @@ bool Oscillator::NextSample() {
 }
 
 void Oscillator::Attach(int pin, bool rev) {
-    if (is_attached_) {
-        if (pin_ == pin) {
-            rev_ = rev;
-            Write(pos_);
-            return;
-        }
-        Detach();
+    // Keep-hold: never ledc_stop on re-attach. Releasing PWM makes the legs sag.
+    if (pwm_active_ && pin_ == pin) {
+        rev_ = rev;
+        is_attached_ = true;
+        Write(pos_);
+        return;
     }
 
     pin_ = pin;
@@ -96,17 +96,24 @@ void Oscillator::Attach(int pin, bool rev) {
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 
     ledc_speed_mode_ = LEDC_LOW_SPEED_MODE;
+    pwm_active_ = true;
     is_attached_ = true;
     previous_servo_command_millis_ = millis();
     Write(pos_);
 }
 
 void Oscillator::Detach() {
-    if (!is_attached_)
+    // Soft detach: leave the last duty running so the servo holds.
+    is_attached_ = false;
+}
+
+void Oscillator::StopPwm() {
+    if (!pwm_active_) {
+        is_attached_ = false;
         return;
-
+    }
     ESP_ERROR_CHECK(ledc_stop(ledc_speed_mode_, ledc_channel_, 0));
-
+    pwm_active_ = false;
     is_attached_ = false;
 }
 

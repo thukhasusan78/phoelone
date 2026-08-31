@@ -4,7 +4,7 @@
 
 Mickey is an ESP32-S3-based desktop AI robot inspired by the interaction style of LivingAI's EMO. It uses the open-source [XiaoZhi](https://github.com/78/xiaozhi-esp32) client as its voice, networking, display, and device-control foundation. This project is an independent implementation and must not copy proprietary LivingAI firmware, assets, branding, cloud APIs, or industrial design.
 
-This firmware profile uses the unique `mickey` board (`main/boards/mickey`), derived from XiaoZhi's Otto robot implementation, for voice interaction, animated expressions, and four-servo motion. Hand servos are disabled so GPIO 12 remains LCD CS.
+This firmware profile uses the unique `mickey` board (`main/boards/mickey`), derived from XiaoZhi's Otto robot implementation, for voice interaction, animated expressions, and four-servo motion. Hand servos are disabled. LCD CS is strapped to GND (`display_cs_pin = GPIO_NUM_NC`).
 
 **Build system:** official ESP-IDF extension and `scripts/build.py`. PlatformIO is not used.
 
@@ -126,7 +126,7 @@ python scripts/build.py mickey --name mickey
 
 ## 7. Pin-Map Safety Gate
 
-The current profile uses the no-camera map in `main/boards/mickey/config.h`. GPIO 12 is LCD CS; hand pins are `GPIO_NUM_NC`.
+The current profile uses the no-camera map in `main/boards/mickey/config.h`. LCD CS is strapped to GND (`GPIO_NUM_NC`); hand pins are `GPIO_NUM_NC`.
 
 Camera-version Otto servo pins (starting profile only):
 

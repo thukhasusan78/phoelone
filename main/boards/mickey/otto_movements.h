@@ -67,7 +67,8 @@ public:
     //-- Predetermined Motion Functions
     void Jump(float steps = 1, int period = 2000);
 
-    void Walk(float steps = 4, int period = 1000, int dir = FORWARD, int amount = 0);
+    void Walk(float steps = 4, int period = 1000, int dir = FORWARD, int amount = 0,
+              int amplitude = 30);
     void Turn(float steps = 4, int period = 2000, int dir = LEFT, int amount = 0);
     void Bend(int steps = 1, int period = 1400, int dir = LEFT);
     void ShakeLeg(int steps = 1, int period = 2000, int dir = RIGHT);

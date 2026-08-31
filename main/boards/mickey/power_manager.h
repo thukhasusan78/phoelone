@@ -1,10 +1,14 @@
 #ifndef __POWER_MANAGER_H__
 #define __POWER_MANAGER_H__
 
+#include <functional>
+
 #include <driver/gpio.h>
 #include <esp_adc/adc_oneshot.h>
 #include <esp_log.h>
 #include <esp_timer.h>
+
+#include "settings.h"
 
 class PowerManager {
 private:
@@ -24,8 +28,15 @@ private:
     size_t adc_values_index_ = 0;
     size_t adc_values_count_ = 0;
     uint8_t battery_level_ = 100;
+    uint8_t low_battery_threshold_ = 15;
     bool is_charging_ = false;
+    bool is_low_battery_ = false;
+    int64_t last_low_battery_ogg_us_ = 0;
+    std::function<void(bool)> on_low_battery_status_changed_;
+    std::function<void()> on_low_battery_remind_;
     inline static bool battery_update_paused_ = false;  // True while battery ADC updates are paused
+    inline static bool motion_inhibited_ = false;
+    static constexpr int64_t kLowBatteryOggIntervalUs = 10LL * 60 * 1000000;
 
     adc_oneshot_unit_handle_t adc_handle_;
 
@@ -41,6 +52,22 @@ private:
         is_charging_ = false;
       } else {
         is_charging_ = gpio_get_level(charging_pin_) == 0;
+      }
+
+      bool new_low = !is_charging_ && battery_level_ <= low_battery_threshold_;
+      if (new_low != is_low_battery_) {
+        is_low_battery_ = new_low;
+        motion_inhibited_ = new_low;
+        last_low_battery_ogg_us_ = new_low ? esp_timer_get_time() : 0;
+        if (on_low_battery_status_changed_) {
+          on_low_battery_status_changed_(is_low_battery_);
+        }
+      } else if (is_low_battery_ && on_low_battery_remind_) {
+        int64_t now = esp_timer_get_time();
+        if (now - last_low_battery_ogg_us_ >= kLowBatteryOggIntervalUs) {
+          last_low_battery_ogg_us_ = now;
+          on_low_battery_remind_();
+        }
       }
     }
 
@@ -111,6 +138,17 @@ public:
         ESP_ERROR_CHECK(esp_timer_start_periodic(timer_handle_, 1000000));  // 1 second
 
         InitializeAdc();
+
+        Settings settings("mickey", false);
+        int pct = settings.GetInt("low_bat_pct", 15);
+        if (pct < 5) {
+            pct = 5;
+        } else if (pct > 40) {
+            pct = 40;
+        }
+        low_battery_threshold_ = static_cast<uint8_t>(pct);
+        ESP_LOGI("PowerManager", "Low-battery motion inhibit at %u%% (NVS mickey/low_bat_pct)",
+                 low_battery_threshold_);
     }
 
     void InitializeAdc() {
@@ -143,6 +181,18 @@ public:
     bool IsCharging() { return is_charging_; }
 
     uint8_t GetBatteryLevel() { return battery_level_; }
+
+    bool IsMotionInhibited() const { return is_low_battery_; }
+
+    static bool MotionInhibited() { return motion_inhibited_; }
+
+    void OnLowBatteryStatusChanged(std::function<void(bool)> callback) {
+        on_low_battery_status_changed_ = std::move(callback);
+    }
+
+    void OnLowBatteryRemind(std::function<void()> callback) {
+        on_low_battery_remind_ = std::move(callback);
+    }
 
     // Pause/resume battery updates (disabled during motion)
     static void PauseBatteryUpdate() { battery_update_paused_ = true; }

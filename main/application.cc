@@ -263,6 +263,19 @@ void Application::Run() {
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
 
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            if (companion_reconnect_pending_) {
+                if (companion_reconnect_ticks_ > 0) {
+                    companion_reconnect_ticks_--;
+                }
+                if (companion_reconnect_ticks_ <= 0) {
+                    companion_reconnect_pending_ = false;
+                    EnsureCompanionChannel();
+                }
+            }
+            MaybeCompanionHeartbeat();
+#endif
+
             // Print debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
                 SystemInfo::PrintHeapStats();
@@ -294,6 +307,12 @@ void Application::HandleNetworkConnectedEvent() {
             },
             "activation", 4096 * 2, this, 2, &activation_task_handle_);
     }
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    else if (protocol_ && !companion_reconnect_suppressed_) {
+        companion_reconnect_backoff_s_ = 1;
+        Schedule([this]() { EnsureCompanionChannel(); });
+    }
+#endif
 
     // Update the status bar immediately to show the network state
     auto display = Board::GetInstance().GetDisplay();
@@ -308,6 +327,12 @@ void Application::HandleNetworkDisconnectedEvent() {
         ESP_LOGI(TAG, "Closing audio channel due to network disconnection");
         protocol_->CloseAudioChannel();
     }
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    else if (protocol_ && protocol_->IsAudioChannelOpened()) {
+        ESP_LOGI(TAG, "Closing companion channel due to network disconnection");
+        protocol_->CloseAudioChannel();
+    }
+#endif
 
     // Update the status bar immediately to show the network state
     auto display = Board::GetInstance().GetDisplay();
@@ -335,6 +360,9 @@ void Application::HandleActivationDoneEvent() {
     Schedule([this]() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+        EnsureCompanionChannel();
+#endif
     });
 }
 
@@ -511,6 +539,21 @@ void Application::InitializeProtocol() {
 
     display->SetStatus(Lang::Strings::LOADING_PROTOCOL);
 
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    // Dashboard keepalive requires WebSocket. If OTA accidentally includes mqtt,
+    // stock logic would pick MQTT and drop /xiaozhi/v1/.
+    if (ota_->HasWebsocketConfig()) {
+        protocol_ = std::make_unique<WebsocketProtocol>();
+        if (ota_->HasMqttConfig()) {
+            ESP_LOGW(TAG, "OTA included mqtt; companion build prefers WebSocket");
+        }
+    } else if (ota_->HasMqttConfig()) {
+        protocol_ = std::make_unique<MqttProtocol>();
+    } else {
+        ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
+        protocol_ = std::make_unique<MqttProtocol>();
+    }
+#else
     if (ota_->HasMqttConfig()) {
         protocol_ = std::make_unique<MqttProtocol>();
     } else if (ota_->HasWebsocketConfig()) {
@@ -519,6 +562,7 @@ void Application::InitializeProtocol() {
         ESP_LOGW(TAG, "No protocol specified in the OTA config, using MQTT");
         protocol_ = std::make_unique<MqttProtocol>();
     }
+#endif
 
     protocol_->OnConnected([this]() { DismissAlert(); });
 
@@ -549,6 +593,11 @@ void Application::InitializeProtocol() {
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            if (!companion_reconnect_suppressed_) {
+                ScheduleCompanionReconnect();
+            }
+#endif
         });
     });
 
@@ -565,17 +614,23 @@ void Application::InitializeProtocol() {
                 return;
             }
             if (strcmp(state->valuestring, "start") == 0) {
-                Schedule([this]() {
+                DeviceState current = GetDeviceState();
+                bool was_listening = current == kDeviceStateListening;
+                Schedule([this, was_listening, current]() {
                     aborted_ = false;
+                    if (current != kDeviceStateSpeaking) {
+                        resume_listening_after_tts_ = was_listening;
+                    }
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
                     if (GetDeviceState() == kDeviceStateSpeaking) {
-                        if (listening_mode_ == kListeningModeManualStop) {
-                            SetDeviceState(kDeviceStateIdle);
-                        } else {
+                        if (resume_listening_after_tts_ &&
+                            listening_mode_ != kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateListening);
+                        } else {
+                            SetDeviceState(kDeviceStateIdle);
                         }
                     }
                 });
@@ -616,6 +671,9 @@ void Application::InitializeProtocol() {
                 Schedule([display, emotion_str = std::string(emotion->valuestring)]() {
                     display->SetEmotion(emotion_str.c_str());
                 });
+                if (external_emotion_callback_) {
+                    external_emotion_callback_();
+                }
             }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
             auto payload = cJSON_GetObjectItem(root, "payload");
@@ -761,7 +819,14 @@ void Application::HandleToggleChatEvent() {
     } else if (state == kDeviceStateSpeaking) {
         AbortSpeaking(kAbortReasonNone);
     } else if (state == kDeviceStateListening) {
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+        if (protocol_) {
+            protocol_->SendStopListening();
+        }
+        SetDeviceState(kDeviceStateIdle);
+#else
         protocol_->CloseAudioChannel();
+#endif
     }
 }
 
@@ -948,6 +1013,11 @@ void Application::HandleStateChangedEvent() {
             display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            if (protocol_ && protocol_->IsAudioChannelOpened()) {
+                board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+            }
+#endif
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -955,6 +1025,9 @@ void Application::HandleStateChangedEvent() {
             display->SetChatMessage("system", "");
             break;
         case kDeviceStateListening:
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+#endif
             display->SetStatus(Lang::Strings::LISTENING);
             display->SetEmotion("neutral");
 
@@ -974,6 +1047,9 @@ void Application::HandleStateChangedEvent() {
             }
             break;
         case kDeviceStateSpeaking:
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
+#endif
             display->SetStatus(Lang::Strings::SPEAKING);
 
             if (listening_mode_ != kListeningModeRealtime) {
@@ -1048,8 +1124,70 @@ ListeningMode Application::GetDefaultListeningMode() const {
     return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
 }
 
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+void Application::EnsureCompanionChannel() {
+    if (companion_reconnect_suppressed_ || protocol_ == nullptr) {
+        return;
+    }
+    if (protocol_->IsAudioChannelOpened()) {
+        companion_reconnect_backoff_s_ = 1;
+        companion_reconnect_pending_ = false;
+        return;
+    }
+
+    if (GetDeviceState() != kDeviceStateIdle) {
+        return;
+    }
+    if (!SetDeviceState(kDeviceStateConnecting)) {
+        return;
+    }
+
+    ESP_LOGI(TAG, "Opening companion WebSocket (no listen)");
+    if (!protocol_->OpenAudioChannel()) {
+        SetDeviceState(kDeviceStateIdle);
+        if (companion_reconnect_backoff_s_ < 60) {
+            int next = companion_reconnect_backoff_s_ * 2;
+            companion_reconnect_backoff_s_ = next > 60 ? 60 : next;
+        }
+        ScheduleCompanionReconnect();
+        return;
+    }
+
+    companion_reconnect_backoff_s_ = 1;
+    companion_reconnect_pending_ = false;
+    companion_heartbeat_ticks_ = 0;
+    SetDeviceState(kDeviceStateIdle);
+    Board::GetInstance().SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
+}
+
+void Application::ScheduleCompanionReconnect() {
+    if (companion_reconnect_suppressed_) {
+        return;
+    }
+    companion_reconnect_pending_ = true;
+    companion_reconnect_ticks_ = companion_reconnect_backoff_s_;
+    ESP_LOGI(TAG, "Companion reconnect in %d s", companion_reconnect_ticks_);
+}
+
+void Application::MaybeCompanionHeartbeat() {
+    if (protocol_ == nullptr || !protocol_->IsAudioChannelOpened()) {
+        return;
+    }
+    companion_heartbeat_ticks_++;
+    if (companion_heartbeat_ticks_ < CONFIG_COMPANION_HEARTBEAT_INTERVAL_S) {
+        return;
+    }
+    companion_heartbeat_ticks_ = 0;
+    protocol_->SendPong(esp_timer_get_time() / 1000);
+}
+#endif
+
 void Application::Reboot() {
     ESP_LOGI(TAG, "Rebooting...");
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    companion_reconnect_suppressed_ = true;
+    companion_reconnect_pending_ = false;
+#endif
     // Disconnect the audio channel
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         protocol_->CloseAudioChannel();
@@ -1068,6 +1206,10 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
     std::string upgrade_url = url;
     std::string version_info = version.empty() ? "(Manual upgrade)" : version;
 
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    companion_reconnect_suppressed_ = true;
+    companion_reconnect_pending_ = false;
+#endif
     // Close audio channel if it's open
     if (protocol_ && protocol_->IsAudioChannelOpened()) {
         ESP_LOGI(TAG, "Closing audio channel before firmware upgrade");
@@ -1105,6 +1247,11 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
         Alert(Lang::Strings::ERROR, Lang::Strings::UPGRADE_FAILED, "cancel",
               Lang::Sounds::OGG_EXCLAMATION);
         vTaskDelay(pdMS_TO_TICKS(3000));
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+        companion_reconnect_suppressed_ = false;
+        companion_reconnect_backoff_s_ = 1;
+        Schedule([this]() { EnsureCompanionChannel(); });
+#endif
         return false;
     } else {
         // Upgrade success, reboot immediately
@@ -1206,6 +1353,10 @@ void Application::PlaySound(const std::string_view& sound) { audio_service_.Play
 
 void Application::ResetProtocol() {
     Schedule([this]() {
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+        companion_reconnect_suppressed_ = true;
+        companion_reconnect_pending_ = false;
+#endif
         // Close audio channel if opened
         if (protocol_ && protocol_->IsAudioChannelOpened()) {
             protocol_->CloseAudioChannel();

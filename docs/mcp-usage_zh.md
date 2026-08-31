@@ -12,4 +12,4 @@ Built-in AI-callable tools: `self.get_device_status`, `self.audio_speaker.set_vo
 
 Built-in user-only tools: `self.get_system_info`, `self.reboot`, `self.upgrade_firmware`, `self.screen.get_info`, `self.screen.snapshot`, `self.screen.preview_image`, `self.assets.set_download_url`.
 
-Otto / Mickey additionally registers `self.otto.*`, `self.battery.get_level`, and `self.mickey.*` stubs. Full schemas: [backend_spec.md](../backend_spec.md).
+Otto / Mickey additionally registers `self.otto.*`, `self.battery.get_level`, and `self.mickey.*` / `self.phoe_lone.*` sensors (IMU and touch are wired on the mickey no-camera SKU; light is still a stub). Full schemas: [backend_spec.md](../backend_spec.md).

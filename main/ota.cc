@@ -175,8 +175,12 @@ esp_err_t Ota::CheckVersion() {
                     settings.SetString(item->string, item->valuestring);
                 }
             } else if (cJSON_IsNumber(item)) {
-                if (settings.GetInt(item->string) != item->valueint) {
-                    settings.SetInt(item->string, item->valueint);
+                int value = item->valueint;
+                if (item->string != nullptr && strcmp(item->string, "version") == 0) {
+                    value = 1;
+                }
+                if (settings.GetInt(item->string) != value) {
+                    settings.SetInt(item->string, value);
                 }
             }
         }

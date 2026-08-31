@@ -43,6 +43,27 @@ otto 机器人是一个开源的人形机器人平台，具有多种动作能力
 >   - 兴奋时会做太空步
 >   - 告别时会挥手
 
+## Idle personality
+
+While the device is in `kDeviceStateIdle`, `mickey_behavior.cc` runs a local fidget director (no cloud). Face GIFs (`winking`) may run after a few seconds. **Body motion waits 60 seconds of inactivity** (no chat, pet, pickup, or dashboard dance), then picks a slow clip every 20–45 s:
+
+- Face-only: `winking`; `sleepy` after the 60 s gate
+- Body: slow left/right sway (`swing`, height 20, period 2800 ms) or an occasional reduced-amplitude forward shuffle (`walk`, amplitude 18, period 3200 ms). Body clips set the `happy` face so the motion looks intentional. Tiptoe-swing / shake-leg / bend are not used (they tip the robot).
+- MPU6050: while a fidget is running (and for 400 ms after), pickup/shake and tilt/bounce fall are masked so self-motion does not freeze the director. True freefall (`|a| < 0.25 g`) still homes the servos.
+- Low battery (default ≤15%, not charging): no body fidgets or MCP dances; home + `sleepy` + dim backlight. `self.otto.stop` / `home` still work.
+- Going to sleep emits `notifications/phoe_lone.event` `"event":"sleep"` then closes the companion socket.
+
+A TTP223 on GPIO 47 requires a continuous hold of about **800 ms** before the happy/pet reaction (brief taps are ignored). After release, the smile stays for **3 s**, then the face returns to `staticstate` and the body homes. Pet-to-wake: GPIO 47 is not an RTC pad on ESP32-S3, so sleep uses **light sleep** plus a **5 s** hold; a shorter touch while asleep is ignored. MPU6050 fall stops servos immediately. Clips stop on wake word, GPIO chat toggle, dashboard/cloud `self.otto.action` / `servo_sequences` / `stop`, pet, pickup, or sleep. Fidgets stay off while listening or speaking so servo noise does not hit VAD. A server `llm` emotion pauses the director for 30 seconds.
+
+## Sensors (no-camera SKU)
+
+| Part | Pins |
+|------|------|
+| MPU6050 | SDA 41, SCL 42, INT 40 |
+| TTP223 | SIG 47 (active-high by default) |
+
+`mickey_sensors.cc` runs a FreeRTOS task below audio priority. MCP `self.mickey.imu.get_reading` / `self.mickey.touch.get_state` (and `self.phoe_lone.*` aliases) return live snapshots. Light remains unwired. Sleep emits `notifications/phoe_lone.event` `"sleep"` before the WebSocket closes.
+
 ## 功能概述
 
 otto 机器人具有丰富的动作能力，包括行走、转向、跳跃、摇摆等多种舞蹈动作。

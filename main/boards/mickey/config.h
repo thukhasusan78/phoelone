@@ -1,8 +1,8 @@
 #ifndef _BOARD_CONFIG_H_
 #define _BOARD_CONFIG_H_
 
-#include <esp_adc/adc_oneshot.h>
 #include <driver/gpio.h>
+#include <esp_adc/adc_oneshot.h>
 
 #define OTTO_VERSION_AUTO 0
 #define OTTO_VERSION_CAMERA 1
@@ -110,7 +110,7 @@ constexpr HardwareConfig NON_CAMERA_VERSION_CONFIG = {
     .right_foot_pin = GPIO_NUM_38,
     .left_leg_pin = GPIO_NUM_17,
     .left_foot_pin = GPIO_NUM_18,
-    /* No-hands SKU: GPIO 12 is LCD CS. Do not attach LEDC servos here. */
+    /* No-hands SKU. LCD CS is strapped to GND; do not drive GPIO 12. */
     .left_hand_pin = GPIO_NUM_NC,
     .right_hand_pin = GPIO_NUM_NC,
 
@@ -135,10 +135,11 @@ constexpr HardwareConfig NON_CAMERA_VERSION_CONFIG = {
     .display_clk_pin = GPIO_NUM_9,
     .display_dc_pin = GPIO_NUM_46,
     .display_rst_pin = GPIO_NUM_11,
-    .display_cs_pin = GPIO_NUM_12,
+    .display_cs_pin = GPIO_NUM_NC,
 
-    .i2c_sda_pin = GPIO_NUM_NC,
-    .i2c_scl_pin = GPIO_NUM_NC,
+    /* MPU6050 on the no-camera SKU. Camera-variant I2C 15/16 is speaker BCLK/LRCK. */
+    .i2c_sda_pin = GPIO_NUM_41,
+    .i2c_scl_pin = GPIO_NUM_42,
 };
 
 #define CAMERA_XCLK (GPIO_NUM_3)
@@ -174,5 +175,20 @@ constexpr HardwareConfig NON_CAMERA_VERSION_CONFIG = {
 #define DISPLAY_SPI_MODE 3
 
 #define BOOT_BUTTON_GPIO GPIO_NUM_0
+
+/* No-camera sensor map. Do not use these GPIOs on the camera SKU. */
+#define MICKEY_IMU_SDA GPIO_NUM_41
+#define MICKEY_IMU_SCL GPIO_NUM_42
+#define MICKEY_IMU_INT GPIO_NUM_40
+#define MICKEY_TOUCH_PIN GPIO_NUM_47
+/* TTP223 is typically active-high momentary. Set to 0 if the module idles high. */
+#ifndef MICKEY_TOUCH_ACTIVE_HIGH
+#define MICKEY_TOUCH_ACTIVE_HIGH 1
+#endif
+
+/* Touch UX. GPIO 47 is not an RTC pad on ESP32-S3, so pet-to-wake uses light sleep. */
+#define MICKEY_PET_CONFIRM_MS 800
+#define MICKEY_PET_AFTERGLOW_MS 3000
+#define MICKEY_TOUCH_SLEEP_HOLD_MS 5000
 
 #endif

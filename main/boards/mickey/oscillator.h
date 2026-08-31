@@ -33,6 +33,7 @@ public:
     ~Oscillator();
     void Attach(int pin, bool rev = false);
     void Detach();
+    void StopPwm();
 
     void SetA(unsigned int amplitude) { amplitude_ = amplitude; };
     void SetO(int offset) { offset_ = offset; };
@@ -56,6 +57,7 @@ private:
 
 private:
     bool is_attached_;
+    bool pwm_active_;
 
     //-- Oscillators parameters
     unsigned int amplitude_;  //-- Amplitude (degrees)

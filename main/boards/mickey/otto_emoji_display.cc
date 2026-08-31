@@ -45,6 +45,23 @@ void OttoEmojiDisplay::SetupUI() {
     SetEmotion("staticstate");
 }
 
+void OttoEmojiDisplay::SetEmotion(const char* emotion) {
+    const char* mapped = emotion;
+    auto* theme = static_cast<LvglTheme*>(current_theme_);
+    auto collection = theme != nullptr ? theme->emoji_collection() : nullptr;
+    if (emotion != nullptr && collection != nullptr &&
+        collection->GetEmojiImage(emotion) == nullptr) {
+        if (strcmp(emotion, "thinking") == 0) {
+            mapped = "neutral";
+        } else if (strcmp(emotion, "confused") == 0) {
+            mapped = "sad";
+        } else if (strcmp(emotion, "loving") == 0) {
+            mapped = "happy";
+        }
+    }
+    LcdDisplay::SetEmotion(mapped);
+}
+
 void OttoEmojiDisplay::SetupPreviewImage() {
     DisplayLockGuard lock(this);
     if (preview_image_ == nullptr) {

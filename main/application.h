@@ -11,12 +11,14 @@
 #include <deque>
 #include <memory>
 #include <functional>
+#include <utility>
 
 #include "protocol.h"
 #include "ota.h"
 #include "audio_service.h"
 #include "device_state.h"
 #include "device_state_machine.h"
+#include "sdkconfig.h"
 
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
@@ -67,6 +69,14 @@ public:
 
     DeviceState GetDeviceState() const { return state_machine_.GetState(); }
     bool IsVoiceDetected() const { return audio_service_.IsVoiceDetected(); }
+
+    int AddStateChangeListener(DeviceStateMachine::StateCallback callback) {
+        return state_machine_.AddStateChangeListener(std::move(callback));
+    }
+
+    void RegisterExternalEmotionCallback(std::function<void()> callback) {
+        external_emotion_callback_ = std::move(callback);
+    }
     
     /**
      * Request state transition
@@ -140,6 +150,7 @@ private:
     std::unique_ptr<Ota> ota_;
 
     std::function<void(const std::string&)> mcp_broadcast_callback_;
+    std::function<void()> external_emotion_callback_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
@@ -175,9 +186,24 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
-    
+
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    void EnsureCompanionChannel();
+    void ScheduleCompanionReconnect();
+    void MaybeCompanionHeartbeat();
+#endif
+
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
+
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    bool companion_reconnect_suppressed_ = false;
+    bool companion_reconnect_pending_ = false;
+    int companion_reconnect_backoff_s_ = 1;
+    int companion_reconnect_ticks_ = 0;
+    int companion_heartbeat_ticks_ = 0;
+#endif
+    bool resume_listening_after_tts_ = false;
 };
 
 
