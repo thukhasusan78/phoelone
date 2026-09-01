@@ -3,16 +3,25 @@
 #include <inttypes.h>
 #include <time.h>
 
+#include <cJSON.h>
+#include <driver/gpio.h>
 #include <driver/rtc_io.h>
+#include <esp_event.h>
 #include <esp_idf_version.h>
 #include <esp_log.h>
+#include <esp_lvgl_port.h>
 #include <esp_sleep.h>
-#include <cJSON.h>
+#include <esp_system.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <hal/wdt_hal.h>
+#include <soc/rtc.h>
 
 #include "application.h"
 #include "assets/lang_config.h"
+#include "audio_codec.h"
 #include "board.h"
 #include "config.h"
 #include "device_state.h"
@@ -22,9 +31,9 @@
 #include "otto_controller.h"
 #include "settings.h"
 
-#include <driver/gpio.h>
-#include <esp_system.h>
-#include <esp_wifi.h>
+#if defined(CONFIG_ESP_CONSOLE_UART_NUM)
+#include <driver/uart.h>
+#endif
 
 #define TAG "MickeyAlarm"
 
@@ -32,14 +41,20 @@ namespace {
 constexpr const char* kNvsNs = "mickey_alarm";
 constexpr int kMinValidYear = 2025;
 constexpr int kMorningIdleHoldTicks = 3;
-constexpr int kSleepIdleWaitMs = 3000;
+constexpr int kSleepIdleWaitMs = 5000;
 constexpr int kSleepTaskStack = 4096;
 constexpr UBaseType_t kSleepTaskPriority = 3;
+constexpr int kLightSleepSliceUs = 1000000;
+constexpr int kLightSleepFailLimit = 5;
+constexpr int kRwdtTimeoutMs = 15000;
+constexpr int kWifiStopWaitMs = 2000;
+constexpr int kAudioStopWaitMs = 300;
 constexpr const char* kWakeSrcKey = "wake_src";
 constexpr int kWakeSrcNone = 0;
 constexpr int kWakeSrcTimer = 1;
 constexpr int kWakeSrcButton = 2;
 constexpr int kWakeSrcPet = 3;
+constexpr int kWakeSrcFailsafe = 4;
 
 bool TouchPinActive() {
     int level = gpio_get_level(MICKEY_TOUCH_PIN);
@@ -66,102 +81,225 @@ int ConsumeWakeSrc() {
     return src;
 }
 
-enum class SleepWakeResult { kTimer, kButton, kPet };
+enum class SleepWakeResult { kTimer, kButton, kPet, kFailsafe };
 
-gpio_int_type_t TouchWakeIntr() {
-#if MICKEY_TOUCH_ACTIVE_HIGH
-    return GPIO_INTR_HIGH_LEVEL;
-#else
-    return GPIO_INTR_LOW_LEVEL;
+void RestoreDisplayFromSleep() {
+    Display* display = Board::GetInstance().GetDisplay();
+    if (display != nullptr) {
+        display->SetPowerSaveMode(false);
+        display->SetEmotion("happy");
+    }
+    Backlight* backlight = Board::GetInstance().GetBacklight();
+    if (backlight != nullptr) {
+        backlight->RestoreBrightness();
+    }
+}
+
+wdt_hal_context_t s_rwdt = {};
+bool s_rwdt_armed = false;
+
+uint32_t RwdtMsToTicks(uint32_t timeout_ms) {
+    uint32_t slow_hz = rtc_clk_slow_freq_get_hz();
+    if (slow_hz == 0) {
+        slow_hz = 32768;
+    }
+    uint32_t ticks = static_cast<uint32_t>((static_cast<uint64_t>(timeout_ms) * slow_hz) / 1000U);
+    return ticks < 1 ? 1 : ticks;
+}
+
+void ArmSleepFailsafeWdt() {
+    wdt_hal_init(&s_rwdt, WDT_RWDT, 0, false);
+    wdt_hal_write_protect_disable(&s_rwdt);
+    wdt_hal_config_stage(&s_rwdt, WDT_STAGE0, RwdtMsToTicks(kRwdtTimeoutMs),
+                         WDT_STAGE_ACTION_RESET_SYSTEM);
+    wdt_hal_enable(&s_rwdt);
+    wdt_hal_write_protect_enable(&s_rwdt);
+    s_rwdt_armed = true;
+    ESP_LOGI(TAG, "Sleep RWDT armed (%d ms)", kRwdtTimeoutMs);
+}
+
+void FeedSleepFailsafeWdt() {
+    if (!s_rwdt_armed) {
+        return;
+    }
+    wdt_hal_write_protect_disable(&s_rwdt);
+    wdt_hal_feed(&s_rwdt);
+    wdt_hal_write_protect_enable(&s_rwdt);
+}
+
+void DisarmSleepFailsafeWdt() {
+    if (!s_rwdt_armed) {
+        return;
+    }
+    wdt_hal_write_protect_disable(&s_rwdt);
+    wdt_hal_disable(&s_rwdt);
+    wdt_hal_write_protect_enable(&s_rwdt);
+    s_rwdt_armed = false;
+}
+
+void WifiStopEvent(void* arg, esp_event_base_t, int32_t id, void*) {
+    if (id == WIFI_EVENT_STA_STOP || id == WIFI_EVENT_AP_STOP) {
+        auto* sem = static_cast<SemaphoreHandle_t>(arg);
+        if (sem != nullptr) {
+            xSemaphoreGive(sem);
+        }
+    }
+}
+
+void StopWifiForSleep() {
+    SemaphoreHandle_t sem = xSemaphoreCreateBinary();
+    esp_event_handler_instance_t inst = nullptr;
+    if (sem != nullptr) {
+        esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, WifiStopEvent, sem,
+                                            &inst);
+    }
+
+    esp_err_t err = esp_wifi_stop();
+    if (err == ESP_ERR_WIFI_NOT_STARTED) {
+        ESP_LOGI(TAG, "Wi-Fi already stopped");
+    } else if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_wifi_stop: %s", esp_err_to_name(err));
+    } else if (sem != nullptr) {
+        if (xSemaphoreTake(sem, pdMS_TO_TICKS(kWifiStopWaitMs)) != pdTRUE) {
+            ESP_LOGW(TAG, "Timed out waiting for Wi-Fi stop");
+        }
+    }
+
+    if (inst != nullptr) {
+        esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, inst);
+    }
+    if (sem != nullptr) {
+        vSemaphoreDelete(sem);
+    }
+}
+
+void FlushConsoleBestEffort() {
+#if defined(CONFIG_ESP_CONSOLE_UART_DEFAULT) || defined(CONFIG_ESP_CONSOLE_UART_CUSTOM)
+    uart_wait_tx_done(static_cast<uart_port_t>(CONFIG_ESP_CONSOLE_UART_NUM), pdMS_TO_TICKS(100));
 #endif
 }
 
-esp_err_t EnableGpioLightSleepWake() {
-    esp_err_t err = gpio_wakeup_enable(MICKEY_TOUCH_PIN, TouchWakeIntr());
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Touch GPIO wakeup enable failed: %s", esp_err_to_name(err));
-        return err;
+void StopAudioForSleep() {
+    auto& app = Application::GetInstance();
+    app.GetAudioService().EnableWakeWordDetection(false);
+    app.GetAudioService().Stop();
+    vTaskDelay(pdMS_TO_TICKS(kAudioStopWaitMs));
+    AudioCodec* codec = Board::GetInstance().GetAudioCodec();
+    if (codec != nullptr) {
+        codec->EnableInput(false);
+        codec->EnableOutput(false);
     }
-    err = gpio_wakeup_enable(BOOT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Boot GPIO wakeup enable failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    return esp_sleep_enable_gpio_wakeup();
 }
 
-// GPIO 47 is not an RTC pad, so a level wake starts the CPU immediately.
-// Stay awake only if the touch stays asserted for the pet-wake hold.
-bool ConfirmTouchSleepHold() {
-    const int64_t need_us = static_cast<int64_t>(MICKEY_TOUCH_SLEEP_HOLD_MS) * 1000;
-    int64_t start = esp_timer_get_time();
-    while ((esp_timer_get_time() - start) < need_us) {
-        if (BootButtonHeld()) {
-            return false;
-        }
-        if (!TouchPinActive()) {
-            ESP_LOGI(TAG, "Sleep touch released before %d ms hold", MICKEY_TOUCH_SLEEP_HOLD_MS);
-            return false;
-        }
-        vTaskDelay(pdMS_TO_TICKS(50));
+esp_err_t EnableBootExt0Wake() {
+    gpio_sleep_sel_dis(BOOT_BUTTON_GPIO);
+    if (rtc_gpio_is_valid_gpio(BOOT_BUTTON_GPIO)) {
+        rtc_gpio_pullup_en(BOOT_BUTTON_GPIO);
+        rtc_gpio_pulldown_dis(BOOT_BUTTON_GPIO);
     }
-    return TouchPinActive();
+    esp_err_t pd = esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+    if (pd != ESP_OK) {
+        ESP_LOGW(TAG, "RTC periph PD on: %s", esp_err_to_name(pd));
+    }
+    esp_err_t err = esp_sleep_enable_ext0_wakeup(BOOT_BUTTON_GPIO, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "EXT0 boot wake failed: %s", esp_err_to_name(err));
+    }
+    // Digital GPIO wake on BOOT only. Never arm GPIO 47 (octal PSRAM SPICLK_P).
+    esp_err_t gpio_err = gpio_wakeup_enable(BOOT_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL);
+    if (gpio_err != ESP_OK) {
+        ESP_LOGW(TAG, "Boot GPIO wakeup enable failed: %s", esp_err_to_name(gpio_err));
+        return err;
+    }
+    gpio_err = esp_sleep_enable_gpio_wakeup();
+    if (gpio_err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_sleep_enable_gpio_wakeup: %s", esp_err_to_name(gpio_err));
+    }
+    return err == ESP_OK ? gpio_err : err;
 }
 
 SleepWakeResult LightSleepUntilWake(uint64_t sleep_us) {
     const int64_t deadline_us = esp_timer_get_time() + static_cast<int64_t>(sleep_us);
-    ESP_LOGI(TAG, "GPIO %d is not an RTC pad; using light sleep so a %d ms pet can wake Mickey",
-             static_cast<int>(MICKEY_TOUCH_PIN), MICKEY_TOUCH_SLEEP_HOLD_MS);
+    const int64_t pet_need_us = static_cast<int64_t>(MICKEY_TOUCH_SLEEP_HOLD_MS) * 1000;
+    int64_t pet_held_us = 0;
+    int fail_count = 0;
 
-    esp_err_t wifi_err = esp_wifi_stop();
-    if (wifi_err != ESP_OK && wifi_err != ESP_ERR_WIFI_NOT_STARTED) {
-        ESP_LOGW(TAG, "esp_wifi_stop: %s", esp_err_to_name(wifi_err));
-    }
+    ESP_LOGI(TAG,
+             "Light sleep in %d ms slices; pet-wake polls GPIO %d for %d ms (not a sleep wakeup)",
+             kLightSleepSliceUs / 1000, static_cast<int>(MICKEY_TOUCH_PIN),
+             MICKEY_TOUCH_SLEEP_HOLD_MS);
+
+    EnableBootExt0Wake();
 
     while (true) {
+        if (BootButtonHeld()) {
+            return SleepWakeResult::kButton;
+        }
+        if (TouchPinActive()) {
+            if (pet_held_us >= pet_need_us) {
+                ESP_LOGI(TAG, "Pet-to-wake hold confirmed");
+                return SleepWakeResult::kPet;
+            }
+        } else {
+            pet_held_us = 0;
+        }
+
         int64_t remaining = deadline_us - esp_timer_get_time();
         if (remaining <= 0) {
             return SleepWakeResult::kTimer;
         }
 
-        ESP_ERROR_CHECK(esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(remaining)));
-        esp_err_t gpio_wake = EnableGpioLightSleepWake();
-        if (gpio_wake != ESP_OK) {
-            ESP_LOGW(TAG, "GPIO light-sleep wake unavailable (%s); timer only",
-                     esp_err_to_name(gpio_wake));
+        int64_t slice = remaining < kLightSleepSliceUs ? remaining : kLightSleepSliceUs;
+        if (slice < 1000) {
+            slice = 1000;
         }
 
-        ESP_LOGI(TAG, "Light sleep, remaining %" PRId64 " us", remaining);
-        esp_err_t sleep_err = esp_light_sleep_start();
-        if (sleep_err != ESP_OK) {
-            ESP_LOGW(TAG, "esp_light_sleep_start: %s", esp_err_to_name(sleep_err));
+        esp_err_t timer_err = esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(slice));
+        if (timer_err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_sleep_enable_timer_wakeup: %s", esp_err_to_name(timer_err));
+            fail_count++;
+            if (fail_count >= kLightSleepFailLimit) {
+                return SleepWakeResult::kFailsafe;
+            }
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
 
-#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
-        uint32_t causes = esp_sleep_get_wakeup_causes();
-        bool timer = (causes & (1UL << ESP_SLEEP_WAKEUP_TIMER)) != 0;
-        bool gpio = (causes & (1UL << ESP_SLEEP_WAKEUP_GPIO)) != 0;
-#else
-        esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-        bool timer = cause == ESP_SLEEP_WAKEUP_TIMER;
-        bool gpio = cause == ESP_SLEEP_WAKEUP_GPIO;
-#endif
-        if (timer || (deadline_us - esp_timer_get_time()) <= 0) {
-            return SleepWakeResult::kTimer;
-        }
-        if (gpio || BootButtonHeld() || TouchPinActive()) {
-            if (BootButtonHeld()) {
-                return SleepWakeResult::kButton;
+        int64_t before_us = esp_timer_get_time();
+        esp_err_t sleep_err = esp_light_sleep_start();
+        FeedSleepFailsafeWdt();
+        if (sleep_err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_light_sleep_start: %s", esp_err_to_name(sleep_err));
+            fail_count++;
+            if (fail_count >= kLightSleepFailLimit) {
+                return SleepWakeResult::kFailsafe;
             }
-            if (TouchPinActive() && ConfirmTouchSleepHold()) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
+        fail_count = 0;
+
+        int64_t elapsed_us = esp_timer_get_time() - before_us;
+        if (elapsed_us < 0) {
+            elapsed_us = 0;
+        }
+
+        if (BootButtonHeld()) {
+            return SleepWakeResult::kButton;
+        }
+
+        if (TouchPinActive()) {
+            pet_held_us += elapsed_us > 0 ? elapsed_us : slice;
+            if (pet_held_us >= pet_need_us) {
                 ESP_LOGI(TAG, "Pet-to-wake hold confirmed");
                 return SleepWakeResult::kPet;
             }
-            if (BootButtonHeld()) {
-                return SleepWakeResult::kButton;
-            }
+        } else {
+            pet_held_us = 0;
+        }
+
+        if ((deadline_us - esp_timer_get_time()) <= 0) {
+            return SleepWakeResult::kTimer;
         }
     }
 }
@@ -330,10 +468,8 @@ void MickeyAlarm::EnterDeepSleepOnTask() {
             state == kDeviceStateConnecting) {
             application.SetDeviceState(kDeviceStateIdle);
         }
-        application.ResetProtocol();
     });
-
-    app.GetAudioService().EnableWakeWordDetection(false);
+    app.ResetProtocol();
 
     const int step_ms = 100;
     int waited = 0;
@@ -345,9 +481,10 @@ void MickeyAlarm::EnterDeepSleepOnTask() {
         waited += step_ms;
     }
     if (!app.CanEnterSleepMode()) {
-        ESP_LOGW(TAG, "Entering deep sleep without a fully idle audio path");
+        ESP_LOGW(TAG, "Entering sleep without a fully idle audio path");
     }
 
+    StopAudioForSleep();
     OttoPrepareForSleep();
     MickeySensorsPrepareForSleep();
 
@@ -357,17 +494,24 @@ void MickeyAlarm::EnterDeepSleepOnTask() {
         display->SetEmotion("sleepy");
         display->SetPowerSaveMode(true);
     }
+    // Let LVGL flush the sleepy frame before stopping the port.
+    vTaskDelay(pdMS_TO_TICKS(150));
+    lvgl_port_stop();
     Backlight* backlight = board.GetBacklight();
     if (backlight != nullptr) {
         backlight->SetBrightness(0);
     }
 
-    vTaskDelay(pdMS_TO_TICKS(200));
+    StopWifiForSleep();
+    FlushConsoleBestEffort();
+    vTaskDelay(pdMS_TO_TICKS(50));
     ArmAndSleep(sleep_us_);
 }
 
 void MickeyAlarm::ArmAndSleep(uint64_t sleep_us) {
     ESP_LOGI(TAG, "Arming sleep for %" PRIu64 " us", sleep_us);
+    PersistWakeSrc(kWakeSrcFailsafe);
+    ArmSleepFailsafeWdt();
 
     SleepWakeResult result = LightSleepUntilWake(sleep_us);
     switch (result) {
@@ -377,12 +521,17 @@ void MickeyAlarm::ArmAndSleep(uint64_t sleep_us) {
         case SleepWakeResult::kButton:
             PersistWakeSrc(kWakeSrcButton);
             break;
+        case SleepWakeResult::kFailsafe:
+            PersistWakeSrc(kWakeSrcFailsafe);
+            break;
         case SleepWakeResult::kTimer:
         default:
             PersistWakeSrc(kWakeSrcTimer);
             break;
     }
+    FeedSleepFailsafeWdt();
     ESP_LOGI(TAG, "Leaving sleep, restart wake_src=%d", static_cast<int>(result));
+    DisarmSleepFailsafeWdt();
     esp_restart();
 }
 
@@ -410,20 +559,14 @@ void MickeyAlarm::StartMorningWatcher() {
         ClearPendingMorning();
         ESP_LOGI(TAG, "Woke from a %d ms pet hold; skipping morning routine",
                  MICKEY_TOUCH_SLEEP_HOLD_MS);
-        auto display = Board::GetInstance().GetDisplay();
-        if (display != nullptr) {
-            display->SetPowerSaveMode(false);
-            display->SetEmotion("happy");
-        }
-        auto backlight = Board::GetInstance().GetBacklight();
-        if (backlight != nullptr) {
-            backlight->RestoreBrightness();
-        }
+        RestoreDisplayFromSleep();
         return;
     }
-    if (wake_src == kWakeSrcButton || (WokeFromExt0() && !WokeFromTimer())) {
+    if (wake_src == kWakeSrcButton || wake_src == kWakeSrcFailsafe ||
+        (WokeFromExt0() && !WokeFromTimer())) {
         ClearPendingMorning();
-        ESP_LOGI(TAG, "Woke from boot button; skipping morning routine");
+        ESP_LOGI(TAG, "Woke from boot/failsafe; skipping morning routine");
+        RestoreDisplayFromSleep();
         return;
     }
     if (wake_src != kWakeSrcTimer && !WokeFromTimer()) {

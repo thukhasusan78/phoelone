@@ -671,6 +671,14 @@ void Application::InitializeProtocol() {
                     });
                 }
             }
+        } else if (strcmp(type->valuestring, "abort") == 0) {
+            // Server abort: idle without closing the companion WebSocket.
+            ESP_LOGI(TAG, "Abort received, returning to idle");
+            Schedule([this]() {
+                aborted_ = true;
+                resume_listening_after_tts_ = false;
+                SetDeviceState(kDeviceStateIdle);
+            });
         } else if (strcmp(type->valuestring, "stt") == 0) {
             auto text = cJSON_GetObjectItem(root, "text");
             if (cJSON_IsString(text)) {

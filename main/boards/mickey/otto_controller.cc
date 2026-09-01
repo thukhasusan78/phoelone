@@ -1088,8 +1088,12 @@ public:
             ESP_LOGW(TAG, "Timed out waiting for home before detach");
         }
 
+        // Suspend the action task before killing PWM so it cannot re-attach LEDC.
+        if (action_task_handle_ != nullptr) {
+            vTaskSuspend(action_task_handle_);
+        }
         otto_.DetachServos();
-        ESP_LOGI(TAG, "Servos detached (PWM off)");
+        ESP_LOGI(TAG, "Servos detached (PWM off, pins Hi-Z)");
     }
 
     // Greeting needs hand servos; this SKU uses jump as the morning stretch.

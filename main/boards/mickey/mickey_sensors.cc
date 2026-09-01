@@ -189,12 +189,37 @@ public:
         EmitNotify(event, sample);
     }
 
+    void ConfigureTouchPin(gpio_int_type_t intr_type) {
+        gpio_config_t io = {};
+        io.pin_bit_mask = 1ULL << MICKEY_TOUCH_PIN;
+        io.mode = GPIO_MODE_INPUT;
+        io.pull_up_en = MICKEY_TOUCH_ACTIVE_HIGH ? GPIO_PULLUP_DISABLE : GPIO_PULLUP_ENABLE;
+        io.pull_down_en = MICKEY_TOUCH_ACTIVE_HIGH ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE;
+        io.intr_type = intr_type;
+        gpio_config(&io);
+    }
+
     void PrepareForSleep() {
+        sleep_requested_.store(true, std::memory_order_release);
         gpio_isr_handler_remove(MICKEY_TOUCH_PIN);
-        gpio_set_intr_type(MICKEY_TOUCH_PIN, GPIO_INTR_DISABLE);
         gpio_isr_handler_remove(MICKEY_IMU_INT);
+        ConfigureTouchPin(GPIO_INTR_DISABLE);
         gpio_set_intr_type(MICKEY_IMU_INT, GPIO_INTR_DISABLE);
-        ESP_LOGI(TAG, "Sensor IRQs released for sleep wakeup");
+
+        if (task_handle_ != nullptr) {
+            xTaskNotifyGive(task_handle_);
+            const int timeout_ms = 500;
+            int waited = 0;
+            while (!sleep_idle_.load(std::memory_order_acquire) && waited < timeout_ms) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                waited += 10;
+            }
+            if (waited >= timeout_ms) {
+                ESP_LOGW(TAG, "Timed out waiting for sensor task to idle");
+            }
+            vTaskSuspend(task_handle_);
+        }
+        ESP_LOGI(TAG, "Sensor task suspended; I2C idle for sleep");
     }
 
 private:
@@ -228,13 +253,7 @@ private:
     }
 
     void InitTouch() {
-        gpio_config_t io = {};
-        io.pin_bit_mask = 1ULL << MICKEY_TOUCH_PIN;
-        io.mode = GPIO_MODE_INPUT;
-        io.pull_up_en = MICKEY_TOUCH_ACTIVE_HIGH ? GPIO_PULLUP_DISABLE : GPIO_PULLUP_ENABLE;
-        io.pull_down_en = MICKEY_TOUCH_ACTIVE_HIGH ? GPIO_PULLDOWN_ENABLE : GPIO_PULLDOWN_DISABLE;
-        io.intr_type = GPIO_INTR_ANYEDGE;
-        gpio_config(&io);
+        ConfigureTouchPin(GPIO_INTR_ANYEDGE);
 
         InstallIsrService();
         esp_err_t err = gpio_isr_handler_add(MICKEY_TOUCH_PIN, TouchIsr, this);
@@ -592,6 +611,14 @@ private:
     void Run() {
         while (true) {
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(kPollMs));
+            if (sleep_requested_.load(std::memory_order_acquire)) {
+                sleep_idle_.store(true, std::memory_order_release);
+                while (sleep_requested_.load(std::memory_order_acquire)) {
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                }
+                continue;
+            }
+
             int64_t now = NowUs();
             imu_irq_.store(false, std::memory_order_relaxed);
 
@@ -620,6 +647,8 @@ private:
 
     std::atomic<bool> touch_irq_{false};
     std::atomic<bool> imu_irq_{false};
+    std::atomic<bool> sleep_requested_{false};
+    std::atomic<bool> sleep_idle_{false};
     bool touch_raw_ = false;
     bool touch_stable_ = false;
     bool pet_confirmed_ = false;

@@ -8,7 +8,9 @@
 //--------------------------------------------------------------
 #include "oscillator.h"
 
+#include <driver/gpio.h>
 #include <driver/ledc.h>
+#include <esp_err.h>
 #include <esp_timer.h>
 
 #include <algorithm>
@@ -39,6 +41,7 @@ Oscillator::Oscillator(int trim) {
     rev_ = false;
 
     pos_ = 90;
+    pin_ = -1;
     previous_millis_ = 0;
 }
 
@@ -108,13 +111,23 @@ void Oscillator::Detach() {
 }
 
 void Oscillator::StopPwm() {
-    if (!pwm_active_) {
-        is_attached_ = false;
-        return;
+    if (pwm_active_) {
+        esp_err_t err = ledc_stop(ledc_speed_mode_, ledc_channel_, 0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "ledc_stop pin %d: %s", pin_, esp_err_to_name(err));
+        }
+        pwm_active_ = false;
     }
-    ESP_ERROR_CHECK(ledc_stop(ledc_speed_mode_, ledc_channel_, 0));
-    pwm_active_ = false;
     is_attached_ = false;
+    if (pin_ >= 0) {
+        gpio_num_t gpio = static_cast<gpio_num_t>(pin_);
+        gpio_reset_pin(gpio);
+        // gpio_reset_pin may enable a pull-up; a high servo line slams to 180.
+        gpio_set_direction(gpio, GPIO_MODE_OUTPUT);
+        gpio_set_level(gpio, 0);
+        gpio_pullup_dis(gpio);
+        gpio_pulldown_dis(gpio);
+    }
 }
 
 void Oscillator::SetT(unsigned int T) {
