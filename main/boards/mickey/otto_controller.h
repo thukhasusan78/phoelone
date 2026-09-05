@@ -12,6 +12,7 @@ enum OttoFidgetMotion {
     kOttoFidgetBend,
     kOttoFidgetJitter,
     kOttoFidgetWalk,
+    kOttoFidgetSit,
 };
 
 void InitializeOttoController(const HardwareConfig& hw_config);

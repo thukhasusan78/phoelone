@@ -2,6 +2,7 @@
 
 #include <esp_log.h>
 
+#include <chrono>
 #include <cstring>
 #include <vector>
 
@@ -90,6 +91,11 @@ void OttoEmojiDisplay::SetStatus(const char* status) {
         ESP_LOGE(TAG, "SetStatus: status is nullptr");
         return;
     }
+
+    if (notification_label_ != nullptr) {
+        lv_obj_add_flag(notification_label_, LV_OBJ_FLAG_HIDDEN);
+    }
+    last_status_update_time_ = std::chrono::system_clock::now();
 
     if (strcmp(status, Lang::Strings::LISTENING) == 0) {
         lv_obj_set_style_text_font(status_label_, &OTTO_ICON_FONT, 0);

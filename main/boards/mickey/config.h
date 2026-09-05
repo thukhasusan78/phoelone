@@ -32,8 +32,6 @@ struct HardwareConfig {
     gpio_num_t right_foot_pin;
     gpio_num_t left_leg_pin;
     gpio_num_t left_foot_pin;
-    gpio_num_t left_hand_pin;
-    gpio_num_t right_hand_pin;
 
     int audio_input_sample_rate;
     int audio_output_sample_rate;
@@ -71,8 +69,6 @@ constexpr HardwareConfig CAMERA_VERSION_CONFIG = {
     .right_foot_pin = GPIO_NUM_44,
     .left_leg_pin = GPIO_NUM_5,
     .left_foot_pin = GPIO_NUM_6,
-    .left_hand_pin = GPIO_NUM_4,
-    .right_hand_pin = GPIO_NUM_7,
 
     .audio_input_sample_rate = 16000,
     .audio_output_sample_rate = 16000,
@@ -110,9 +106,7 @@ constexpr HardwareConfig NON_CAMERA_VERSION_CONFIG = {
     .right_foot_pin = GPIO_NUM_38,
     .left_leg_pin = GPIO_NUM_17,
     .left_foot_pin = GPIO_NUM_18,
-    /* No-hands SKU. LCD CS is strapped to GND; do not drive GPIO 12. */
-    .left_hand_pin = GPIO_NUM_NC,
-    .right_hand_pin = GPIO_NUM_NC,
+    /* Four servos only. LCD CS is strapped to GND; do not drive GPIO 12. */
 
     .audio_input_sample_rate = 16000,
     .audio_output_sample_rate = 24000,

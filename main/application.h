@@ -74,10 +74,12 @@ public:
         return state_machine_.AddStateChangeListener(std::move(callback));
     }
 
-    void RegisterExternalEmotionCallback(std::function<void()> callback) {
+    void RegisterExternalEmotionCallback(std::function<void(const char*)> callback) {
         external_emotion_callback_ = std::move(callback);
     }
-    
+
+    bool HasServerTime() const { return has_server_time_; }
+
     /**
      * Request state transition
      * Returns true if transition was successful
@@ -150,7 +152,7 @@ private:
     std::unique_ptr<Ota> ota_;
 
     std::function<void(const std::string&)> mcp_broadcast_callback_;
-    std::function<void()> external_emotion_callback_;
+    std::function<void(const char*)> external_emotion_callback_;
 
     bool has_server_time_ = false;
     bool aborted_ = false;
@@ -193,18 +195,23 @@ private:
     void MaybeCompanionHeartbeat();
     void BumpCompanionBackoff();
     void HoldCompanionRadio();
+    void EnterCompanionOfflineIdle();
+    void ArmCompanionManualReconnect();
+    void ShowCompanionRetryCountdown(int seconds_remaining);
 #endif
 
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
 
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    static constexpr int kCompanionMaxAutoReconnect = 3;
     bool companion_reconnect_suppressed_ = false;
     bool companion_reconnect_pending_ = false;
+    bool companion_auto_reconnect_exhausted_ = false;
     int companion_reconnect_backoff_s_ = 1;
     int companion_reconnect_ticks_ = 0;
     int companion_heartbeat_ticks_ = 0;
-    int companion_error_streak_ = 0;
+    int companion_auto_attempts_ = 0;
     int64_t companion_channel_opened_us_ = 0;
 #endif
     bool resume_listening_after_tts_ = false;

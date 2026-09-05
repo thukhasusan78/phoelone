@@ -637,7 +637,7 @@ void MickeyAlarm::RunMorningRoutine() {
         backlight->RestoreBrightness();
     }
 
-    Application::GetInstance().PlaySound(Lang::Sounds::OGG_VIBRATION);
+    Application::GetInstance().PlaySound(Lang::Sounds::OGG_ALARM);
     OttoQueueMorningWake();
 
     Settings settings(kNvsNs, true);

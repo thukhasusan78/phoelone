@@ -183,19 +183,15 @@ void Application::Run() {
         if (bits & MAIN_EVENT_ERROR) {
             SetDeviceState(kDeviceStateIdle);
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
-            companion_error_streak_++;
             if (protocol_ && protocol_->IsTransportConnected()) {
                 protocol_->CloseAudioChannel();
             }
-            if (companion_error_streak_ < 3) {
-                ESP_LOGW(TAG, "Companion channel error (%d): %s", companion_error_streak_,
-                         last_error_message_.c_str());
-            } else
+            ESP_LOGW(TAG, "Companion channel error (%d/%d): %s", companion_auto_attempts_,
+                     kCompanionMaxAutoReconnect, last_error_message_.c_str());
+#else
+            Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
+                  Lang::Sounds::OGG_EXCLAMATION);
 #endif
-            {
-                Alert(Lang::Strings::ERROR, last_error_message_.c_str(), "cancel",
-                      Lang::Sounds::OGG_EXCLAMATION);
-            }
         }
 
         if (bits & MAIN_EVENT_NETWORK_CONNECTED) {
@@ -278,6 +274,7 @@ void Application::Run() {
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
             if (companion_reconnect_pending_) {
                 if (companion_reconnect_ticks_ > 0) {
+                    ShowCompanionRetryCountdown(companion_reconnect_ticks_);
                     companion_reconnect_ticks_--;
                 }
                 if (companion_reconnect_ticks_ <= 0) {
@@ -320,8 +317,10 @@ void Application::HandleNetworkConnectedEvent() {
             "activation", 4096 * 2, this, 2, &activation_task_handle_);
     }
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
-    else if (protocol_ && !companion_reconnect_suppressed_) {
+    else if (protocol_ && !companion_reconnect_suppressed_ &&
+             !companion_auto_reconnect_exhausted_) {
         companion_reconnect_backoff_s_ = 1;
+        companion_auto_attempts_ = 0;
         Schedule([this]() { EnsureCompanionChannel(); });
     }
 #endif
@@ -456,11 +455,16 @@ void Application::CheckAssetsVersion() {
 }
 
 void Application::CheckNewVersion() {
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    const int MAX_RETRY = 3;
+    int retry_delay = 5;
+#else
     const int MAX_RETRY = 10;
-    int retry_count = 0;
     int retry_delay = 10;  // Initial retry delay in seconds
+#endif
 
     auto& board = Board::GetInstance();
+    int retry_count = 0;
     while (true) {
         auto display = board.GetDisplay();
         display->SetStatus(Lang::Strings::CHECKING_NEW_VERSION);
@@ -470,9 +474,26 @@ void Application::CheckNewVersion() {
             retry_count++;
             if (retry_count >= MAX_RETRY) {
                 ESP_LOGE(TAG, "Too many retries, exit version check");
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+                display->ClearChatMessages();
+                display->SetEmotion("staticstate");
+#endif
                 return;
             }
 
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            ESP_LOGW(TAG, "Check new version failed, retry in %d seconds (%d/%d): code=%d url=%s",
+                     retry_delay, retry_count, MAX_RETRY, err, ota_->GetCheckVersionUrl().c_str());
+            display->SetStatus(Lang::Strings::ERROR);
+            display->SetEmotion("cloud_off");
+            for (int i = 0; i < retry_delay; i++) {
+                ShowCompanionRetryCountdown(retry_delay - i);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                if (GetDeviceState() == kDeviceStateIdle) {
+                    break;
+                }
+            }
+#else
             char error_message[128];
             int error_message_length =
                 snprintf(error_message, sizeof(error_message), "code=%d, url=%s", err,
@@ -501,6 +522,7 @@ void Application::CheckNewVersion() {
                 }
             }
             retry_delay *= 2;  // Double the retry delay
+#endif
             continue;
         }
         retry_count = 0;
@@ -609,7 +631,7 @@ void Application::InitializeProtocol() {
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
-            if (!companion_reconnect_suppressed_) {
+            if (!companion_reconnect_suppressed_ && !companion_auto_reconnect_exhausted_) {
                 constexpr int64_t kStableUs = 20LL * 1000 * 1000;
                 if (companion_channel_opened_us_ == 0 ||
                     (esp_timer_get_time() - companion_channel_opened_us_) < kStableUs) {
@@ -701,7 +723,7 @@ void Application::InitializeProtocol() {
                     display->SetEmotion(emotion_str.c_str());
                 });
                 if (external_emotion_callback_) {
-                    external_emotion_callback_();
+                    external_emotion_callback_(emotion->valuestring);
                 }
             }
         } else if (strcmp(type->valuestring, "mcp") == 0) {
@@ -794,6 +816,7 @@ void Application::Alert(const char* status, const char* message, const char* emo
                         const std::string_view& sound) {
     ESP_LOGW(TAG, "Alert [%s] %s: %s", emotion, status, message);
     auto display = Board::GetInstance().GetDisplay();
+    display->ClearChatMessages();
     display->SetStatus(status);
     display->SetEmotion(emotion);
     display->SetChatMessage("system", message);
@@ -806,7 +829,11 @@ void Application::DismissAlert() {
     if (GetDeviceState() == kDeviceStateIdle) {
         auto display = Board::GetInstance().GetDisplay();
         display->SetStatus(Lang::Strings::STANDBY);
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+        display->SetEmotion("staticstate");
+#else
         display->SetEmotion("neutral");
+#endif
         display->SetChatMessage("system", "");
     }
 }
@@ -841,6 +868,9 @@ void Application::HandleToggleChatEvent() {
     if (state == kDeviceStateIdle) {
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            ArmCompanionManualReconnect();
+#endif
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
             Schedule([this, mode]() { ContinueOpenAudioChannel(mode); });
@@ -875,7 +905,11 @@ void Application::ContinueOpenAudioChannel(ListeningMode mode) {
         if (!protocol_->OpenAudioChannel()) {
             // Return to idle so the device is not stuck in the connecting
             // state (not every failure path reports a network error)
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            EnterCompanionOfflineIdle();
+#else
             SetDeviceState(kDeviceStateIdle);
+#endif
             return;
         }
     }
@@ -902,6 +936,9 @@ void Application::HandleStartListeningEvent() {
 
     if (state == kDeviceStateIdle) {
         if (!protocol_->IsAudioChannelOpened()) {
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            ArmCompanionManualReconnect();
+#endif
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
             Schedule([this]() { ContinueOpenAudioChannel(kListeningModeManualStop); });
@@ -967,10 +1004,22 @@ void Application::BeginWakeWordInvoke(const std::string& wake_word) {
     // Must run in the main task with the device in idle state
     audio_service_.EncodeWakeWord();
 
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+    const bool arm_manual = protocol_ && !protocol_->IsAudioChannelOpened();
+    if (arm_manual) {
+        ArmCompanionManualReconnect();
+    }
+#endif
+
     // Always pass through the connecting state, even if the audio channel is
     // already opened. ContinueWakeWordInvoke() rejects any other state, so
     // skipping this transition would silently drop the wake word invocation.
     if (!SetDeviceState(kDeviceStateConnecting)) {
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+        if (protocol_ && !protocol_->IsAudioChannelOpened()) {
+            EnterCompanionOfflineIdle();
+        }
+#endif
         // Wake word detection was stopped by the detection itself; restore it
         // so the device does not become unresponsive to wake words.
         audio_service_.EnableWakeWordDetection(true);
@@ -1002,7 +1051,11 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
             // Return to idle so the device is not stuck in the connecting
             // state (not every failure path reports a network error), and
             // wake word detection is re-enabled by the idle state handler.
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            EnterCompanionOfflineIdle();
+#else
             SetDeviceState(kDeviceStateIdle);
+#endif
             return;
         }
     }
@@ -1040,8 +1093,12 @@ void Application::HandleStateChangedEvent() {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
             display->SetStatus(Lang::Strings::STANDBY);
-            display->ClearChatMessages();    // Clear messages first
+            display->ClearChatMessages();  // Clear messages first
+#ifdef CONFIG_COMPANION_KEEP_CHANNEL
+            display->SetEmotion("staticstate");
+#else
             display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
+#endif
             audio_service_.EnableVoiceProcessing(false);
             audio_service_.EnableWakeWordDetection(true);
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
@@ -1060,7 +1117,9 @@ void Application::HandleStateChangedEvent() {
             board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
 #endif
             display->SetStatus(Lang::Strings::LISTENING);
+#ifndef CONFIG_COMPANION_KEEP_CHANNEL
             display->SetEmotion("neutral");
+#endif
 
             // Make sure the audio processor is running
             if (play_popup_on_listening_ || !audio_service_.IsAudioProcessorRunning()) {
@@ -1167,8 +1226,39 @@ void Application::BumpCompanionBackoff() {
     }
 }
 
+void Application::ShowCompanionRetryCountdown(int seconds_remaining) {
+    auto display = Board::GetInstance().GetDisplay();
+    display->ClearChatMessages();
+    char buffer[160];
+    snprintf(buffer, sizeof(buffer), Lang::Strings::CHECK_NEW_VERSION_FAILED, seconds_remaining,
+             "");
+    display->SetChatMessage("system", buffer);
+}
+
+void Application::EnterCompanionOfflineIdle() {
+    companion_reconnect_pending_ = false;
+    companion_auto_reconnect_exhausted_ = true;
+    if (GetDeviceState() != kDeviceStateIdle) {
+        SetDeviceState(kDeviceStateIdle);
+    }
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetStatus(Lang::Strings::STANDBY);
+    display->ClearChatMessages();
+    display->SetEmotion("staticstate");
+    ESP_LOGI(TAG, "Companion auto-reconnect exhausted; offline idle");
+}
+
+void Application::ArmCompanionManualReconnect() {
+    companion_auto_reconnect_exhausted_ = false;
+    companion_auto_attempts_ = 0;
+    companion_reconnect_pending_ = false;
+    companion_reconnect_backoff_s_ = 1;
+    companion_reconnect_ticks_ = 0;
+}
+
 void Application::EnsureCompanionChannel() {
-    if (companion_reconnect_suppressed_ || protocol_ == nullptr) {
+    if (companion_reconnect_suppressed_ || companion_auto_reconnect_exhausted_ ||
+        protocol_ == nullptr) {
         return;
     }
     if (protocol_->IsAudioChannelOpened()) {
@@ -1188,6 +1278,13 @@ void Application::EnsureCompanionChannel() {
     HoldCompanionRadio();
     if (!protocol_->OpenAudioChannel()) {
         SetDeviceState(kDeviceStateIdle);
+        companion_auto_attempts_++;
+        ESP_LOGW(TAG, "Companion connect failed (%d/%d)", companion_auto_attempts_,
+                 kCompanionMaxAutoReconnect);
+        if (companion_auto_attempts_ >= kCompanionMaxAutoReconnect) {
+            EnterCompanionOfflineIdle();
+            return;
+        }
         BumpCompanionBackoff();
         ScheduleCompanionReconnect();
         return;
@@ -1201,12 +1298,18 @@ void Application::EnsureCompanionChannel() {
 }
 
 void Application::ScheduleCompanionReconnect() {
-    if (companion_reconnect_suppressed_) {
+    if (companion_reconnect_suppressed_ || companion_auto_reconnect_exhausted_) {
+        return;
+    }
+    if (companion_auto_attempts_ >= kCompanionMaxAutoReconnect) {
+        EnterCompanionOfflineIdle();
         return;
     }
     companion_reconnect_pending_ = true;
     companion_reconnect_ticks_ = companion_reconnect_backoff_s_;
-    ESP_LOGI(TAG, "Companion reconnect in %d s", companion_reconnect_ticks_);
+    ShowCompanionRetryCountdown(companion_reconnect_ticks_);
+    ESP_LOGI(TAG, "Companion reconnect in %d s (%d/%d)", companion_reconnect_ticks_,
+             companion_auto_attempts_, kCompanionMaxAutoReconnect);
 }
 
 void Application::MaybeCompanionHeartbeat() {
@@ -1218,7 +1321,8 @@ void Application::MaybeCompanionHeartbeat() {
     if (protocol_->IsAudioChannelOpened() && companion_channel_opened_us_ != 0 &&
         (esp_timer_get_time() - companion_channel_opened_us_) >= kStableUs) {
         companion_reconnect_backoff_s_ = 1;
-        companion_error_streak_ = 0;
+        companion_auto_attempts_ = 0;
+        companion_auto_reconnect_exhausted_ = false;
     }
 
     companion_heartbeat_ticks_++;
@@ -1306,6 +1410,8 @@ bool Application::UpgradeFirmware(const std::string& url, const std::string& ver
         vTaskDelay(pdMS_TO_TICKS(3000));
 #ifdef CONFIG_COMPANION_KEEP_CHANNEL
         companion_reconnect_suppressed_ = false;
+        companion_auto_reconnect_exhausted_ = false;
+        companion_auto_attempts_ = 0;
         companion_reconnect_backoff_s_ = 1;
         Schedule([this]() { EnsureCompanionChannel(); });
 #endif

@@ -4,7 +4,7 @@
 void InitializeMickeyBehavior();
 void MickeyBehaviorPause();
 void MickeyBehaviorResume();
-void MickeyBehaviorNotifyExternalEmotion();
+void MickeyBehaviorNotifyExternalEmotion(const char* emotion);
 void MickeyBehaviorOnPetBegin();
 void MickeyBehaviorOnPetEnd();
 void MickeyBehaviorOnImuEvent(int event);

@@ -14,6 +14,7 @@
 #include "application.h"
 #include "board.h"
 #include "config.h"
+#include "device_state.h"
 #include "mcp_server.h"
 #include "mickey_behavior.h"
 #include "mickey_sensors.h"
@@ -30,7 +31,6 @@ private:
     Otto otto_;
     TaskHandle_t action_task_handle_ = nullptr;
     QueueHandle_t action_queue_;
-    bool has_hands_ = false;
     std::atomic<bool> is_action_in_progress_{false};
     std::atomic<bool> current_is_fidget_{false};
     std::mutex queue_mutex_;
@@ -53,27 +53,17 @@ private:
         ACTION_MOONWALK = 5,
         ACTION_BEND = 6,
         ACTION_SHAKE_LEG = 7,
-        ACTION_SIT = 25,                 // Sit
-        ACTION_RADIO_CALISTHENICS = 26,  // Radio calisthenics
-        ACTION_MAGIC_CIRCLE = 27,        // Magic circle
+        ACTION_SIT = 25,
         ACTION_UPDOWN = 8,
         ACTION_TIPTOE_SWING = 9,
         ACTION_JITTER = 10,
         ACTION_ASCENDING_TURN = 11,
         ACTION_CRUSAITO = 12,
         ACTION_FLAPPING = 13,
-        ACTION_HANDS_UP = 14,
-        ACTION_HANDS_DOWN = 15,
-        ACTION_HAND_WAVE = 16,
-        ACTION_WINDMILL = 20,  // Windmill
-        ACTION_TAKEOFF = 21,   // Takeoff
-        ACTION_FITNESS = 22,   // Fitness
-        ACTION_GREETING = 23,  // Greeting
-        ACTION_SHY = 24,       // Shy
-        ACTION_SHOWCASE = 28,  // Showcase
         ACTION_HOME = 17,
-        ACTION_SERVO_SEQUENCE = 18,  // Servo sequence (user-programmed)
-        ACTION_WHIRLWIND_LEG = 19    // Whirlwind leg
+        ACTION_SERVO_SEQUENCE = 18,
+        ACTION_WHIRLWIND_LEG = 19,
+        ACTION_SHOWCASE = 28
     };
 
     static void ActionTask(void* arg) {
@@ -114,9 +104,6 @@ private:
                             for (int j = 0; j < SERVO_COUNT; j++) {
                                 current_positions[j] = 90;  // Default mid position
                             }
-                            // Default hand-servo rest positions
-                            current_positions[LEFT_HAND] = 45;
-                            current_positions[RIGHT_HAND] = 180 - 45;
 
                             for (int i = 0; i < array_size; i++) {
                                 if (controller->otto_.IsStopRequested()) {
@@ -135,8 +122,7 @@ private:
                                         int period = 300;   // Default period 300 ms
                                         float steps = 8.0;  // Default cycle count 8.0
 
-                                        const char* servo_names[] = {"ll", "rl", "lf",
-                                                                     "rf", "lh", "rh"};
+                                        const char* servo_names[] = {"ll", "rl", "lf", "rf"};
 
                                         // Amplitude (short key "a"), default 0 deg
                                         for (int j = 0; j < SERVO_COUNT; j++) {
@@ -263,9 +249,8 @@ private:
                                         // Read servo targets from JSON (short key "s")
                                         cJSON* servos_item = cJSON_GetObjectItem(action_item, "s");
                                         if (cJSON_IsObject(servos_item)) {
-                                            // Short keys: ll/rl/lf/rf/lh/rh
-                                            const char* servo_names[] = {"ll", "rl", "lf",
-                                                                         "rf", "lh", "rh"};
+                                            // Short keys: ll/rl/lf/rf (legs and feet only)
+                                            const char* servo_names[] = {"ll", "rl", "lf", "rf"};
 
                                             for (int j = 0; j < SERVO_COUNT; j++) {
                                                 cJSON* servo_value = cJSON_GetObjectItem(
@@ -356,18 +341,11 @@ private:
                     // Run a predefined motion
                     switch (params.action_type) {
                         case ACTION_WALK:
-                            if (params.is_fidget) {
-                                // Fidget: amount is hip/foot amplitude, no arm swing.
-                                controller->otto_.Walk(params.steps, params.speed, params.direction,
-                                                       0, params.amount);
-                            } else {
-                                controller->otto_.Walk(params.steps, params.speed, params.direction,
-                                                       params.amount);
-                            }
+                            controller->otto_.Walk(params.steps, params.speed, params.direction,
+                                                   params.is_fidget ? params.amount : 30);
                             break;
                         case ACTION_TURN:
-                            controller->otto_.Turn(params.steps, params.speed, params.direction,
-                                                   params.amount);
+                            controller->otto_.Turn(params.steps, params.speed, params.direction);
                             break;
                         case ACTION_JUMP:
                             controller->otto_.Jump(params.steps, params.speed);
@@ -388,16 +366,6 @@ private:
                             break;
                         case ACTION_SIT:
                             controller->otto_.Sit();
-                            break;
-                        case ACTION_RADIO_CALISTHENICS:
-                            if (controller->has_hands_) {
-                                controller->otto_.RadioCalisthenics();
-                            }
-                            break;
-                        case ACTION_MAGIC_CIRCLE:
-                            if (controller->has_hands_) {
-                                controller->otto_.MagicCircle();
-                            }
                             break;
                         case ACTION_SHOWCASE:
                             controller->otto_.Showcase();
@@ -428,52 +396,9 @@ private:
                             controller->otto_.WhirlwindLeg(params.steps, params.speed,
                                                            params.amount);
                             break;
-                        case ACTION_HANDS_UP:
-                            if (controller->has_hands_) {
-                                controller->otto_.HandsUp(params.speed, params.direction);
-                            }
-                            break;
-                        case ACTION_HANDS_DOWN:
-                            if (controller->has_hands_) {
-                                controller->otto_.HandsDown(params.speed, params.direction);
-                            }
-                            break;
-                        case ACTION_HAND_WAVE:
-                            if (controller->has_hands_) {
-                                controller->otto_.HandWave(params.direction);
-                            }
-                            break;
-                        case ACTION_WINDMILL:
-                            if (controller->has_hands_) {
-                                controller->otto_.Windmill(params.steps, params.speed,
-                                                           params.amount);
-                            }
-                            break;
-                        case ACTION_TAKEOFF:
-                            if (controller->has_hands_) {
-                                controller->otto_.Takeoff(params.steps, params.speed,
-                                                          params.amount);
-                            }
-                            break;
-                        case ACTION_FITNESS:
-                            if (controller->has_hands_) {
-                                controller->otto_.Fitness(params.steps, params.speed,
-                                                          params.amount);
-                            }
-                            break;
-                        case ACTION_GREETING:
-                            if (controller->has_hands_) {
-                                controller->otto_.Greeting(params.direction, params.steps);
-                            }
-                            break;
-                        case ACTION_SHY:
-                            if (controller->has_hands_) {
-                                controller->otto_.Shy(params.direction, params.steps);
-                            }
-                            break;
                         case ACTION_HOME:
                             controller->otto_.ClearStop();
-                            controller->otto_.Home(true);
+                            controller->otto_.Home();
                             break;
                     }
                     if (params.action_type != ACTION_SIT) {
@@ -484,7 +409,7 @@ private:
                             // Skip Home if more motions are queued or a cooperative stop is in
                             // progress
                             if (pending_actions == 0 && !controller->otto_.IsStopRequested()) {
-                                controller->otto_.Home(params.action_type != ACTION_HANDS_UP);
+                                controller->otto_.Home();
                             }
                         }
                     }
@@ -508,6 +433,8 @@ private:
         "Error: motion queue is full; try again or call self.otto.stop";
     static constexpr const char* kBatteryLowError =
         "Error: battery low; connect a charger";
+    static constexpr const char* kListeningFreezeError =
+        "Error: motion frozen while listening";
 
     bool EnqueueLocked(const OttoActionParams& params) {
         if (xQueueSend(action_queue_, &params, 0) != pdTRUE) {
@@ -554,20 +481,14 @@ private:
 
     bool QueueAction(int action_type, int steps, int speed, int direction, int amount,
                      bool cancel_fidget = true) {
-        // Reject hand motions when no hand servos are configured
-        if ((action_type >= ACTION_HANDS_UP && action_type <= ACTION_HAND_WAVE) ||
-            (action_type == ACTION_WINDMILL) || (action_type == ACTION_TAKEOFF) ||
-            (action_type == ACTION_FITNESS) || (action_type == ACTION_GREETING) ||
-            (action_type == ACTION_SHY) || (action_type == ACTION_RADIO_CALISTHENICS) ||
-            (action_type == ACTION_MAGIC_CIRCLE)) {
-            if (!has_hands_) {
-                ESP_LOGW(TAG, "Hand action requested but no hand servos are configured");
-                return false;
-            }
-        }
-
         ESP_LOGI(TAG, "Action control: type=%d, steps=%d, speed=%d, direction=%d, amount=%d",
                  action_type, steps, speed, direction, amount);
+
+        if (Application::GetInstance().GetDeviceState() == kDeviceStateListening &&
+            action_type != ACTION_HOME) {
+            ESP_LOGW(TAG, "Rejecting action %d; listening freeze", action_type);
+            return false;
+        }
 
         if (PowerManager::MotionInhibited() && action_type != ACTION_HOME) {
             ESP_LOGW(TAG, "Rejecting action %d; battery low", action_type);
@@ -592,6 +513,10 @@ private:
     }
 
     ReturnValue QueueOrBusy(int action_type, int steps, int speed, int direction, int amount) {
+        if (Application::GetInstance().GetDeviceState() == kDeviceStateListening &&
+            action_type != ACTION_HOME) {
+            return kListeningFreezeError;
+        }
         if (PowerManager::MotionInhibited() && action_type != ACTION_HOME) {
             return kBatteryLowError;
         }
@@ -602,6 +527,10 @@ private:
     }
 
     bool TryQueueFidget(int action_type, int steps, int speed, int direction, int amount) {
+        auto state = Application::GetInstance().GetDeviceState();
+        if (state == kDeviceStateListening) {
+            return false;
+        }
         if (PowerManager::MotionInhibited()) {
             return false;
         }
@@ -661,6 +590,11 @@ private:
 
         ESP_LOGD(TAG, "Sequence queued: %s", params.servo_sequence_json);
 
+        if (Application::GetInstance().GetDeviceState() == kDeviceStateListening) {
+            ESP_LOGW(TAG, "Rejecting servo sequence; listening freeze");
+            return false;
+        }
+
         if (PowerManager::MotionInhibited()) {
             ESP_LOGW(TAG, "Rejecting servo sequence; battery low");
             return false;
@@ -678,34 +612,27 @@ private:
         int right_leg = settings.GetInt("right_leg", 0);
         int left_foot = settings.GetInt("left_foot", 0);
         int right_foot = settings.GetInt("right_foot", 0);
-        int left_hand = settings.GetInt("left_hand", 0);
-        int right_hand = settings.GetInt("right_hand", 0);
 
         ESP_LOGI(TAG,
-                 "Loaded trims from NVS: left_leg=%d, right_leg=%d, left_foot=%d, right_foot=%d, "
-                 "left_hand=%d, right_hand=%d",
-                 left_leg, right_leg, left_foot, right_foot, left_hand, right_hand);
+                 "Loaded trims from NVS: left_leg=%d, right_leg=%d, left_foot=%d, right_foot=%d",
+                 left_leg, right_leg, left_foot, right_foot);
 
-        otto_.SetTrims(left_leg, right_leg, left_foot, right_foot, left_hand, right_hand);
+        otto_.SetTrims(left_leg, right_leg, left_foot, right_foot);
     }
 
 public:
     OttoController(const HardwareConfig& hw_config) {
         otto_.Init(hw_config.left_leg_pin, hw_config.right_leg_pin, hw_config.left_foot_pin,
-                   hw_config.right_foot_pin, hw_config.left_hand_pin, hw_config.right_hand_pin);
-
-        has_hands_ =
-            (hw_config.left_hand_pin != GPIO_NUM_NC && hw_config.right_hand_pin != GPIO_NUM_NC);
-        ESP_LOGI(TAG, "Otto initialized %s hand servos", has_hands_ ? "with" : "without");
-        ESP_LOGI(TAG, "Servo pins: LL=%d, RL=%d, LF=%d, RF=%d, LH=%d, RH=%d",
-                 hw_config.left_leg_pin, hw_config.right_leg_pin, hw_config.left_foot_pin,
-                 hw_config.right_foot_pin, hw_config.left_hand_pin, hw_config.right_hand_pin);
+                   hw_config.right_foot_pin);
+        ESP_LOGI(TAG, "Otto initialized with 4 servos (no hands)");
+        ESP_LOGI(TAG, "Servo pins: LL=%d, RL=%d, LF=%d, RF=%d", hw_config.left_leg_pin,
+                 hw_config.right_leg_pin, hw_config.left_foot_pin, hw_config.right_foot_pin);
 
         LoadTrimsFromNVS();
 
         action_queue_ = xQueueCreate(10, sizeof(OttoActionParams));
 
-        QueueAction(ACTION_HOME, 1, 1000, 1, 0);  // direction=1 also homes the hands
+        QueueAction(ACTION_HOME, 1, 1000, 1, 0);
 
         RegisterMcpTools();
     }
@@ -718,41 +645,33 @@ public:
         // Unified motion tool (all motions except servo sequences)
         mcp_server.AddTool(
             "self.otto.action",
-            "Run a robot motion. action: motion name. Parameters depend on the motion: "
-            "direction 1=forward/left, -1=back/right, 0=both sides; "
-            "steps 1-100; speed 100-3000 (smaller is faster); amount 0-170; arm_swing 0-170. "
-            "Basic: walk (steps/speed/direction/arm_swing), turn "
-            "(steps/speed/direction/arm_swing), "
+            "Run a robot motion. This robot has four servos (left/right leg and foot) and no "
+            "hands. action: motion name. Parameters depend on the motion: "
+            "direction 1=forward/left, -1=back/right; "
+            "steps 1-100; speed 100-3000 (smaller is faster); amount 0-170. "
+            "Basic: walk (steps/speed/direction), turn (steps/speed/direction), "
             "jump (steps/speed), swing (steps/speed/amount), moonwalk "
             "(steps/speed/direction/amount), "
             "bend (steps/speed/direction), shake_leg (steps/speed/direction), "
             "updown (steps/speed/amount), whirlwind_leg (steps/speed/amount). "
-            "Poses: sit, showcase, home. "
-            "Hand motions (require hand servos): hands_up (speed/direction), hands_down "
-            "(speed/direction), "
-            "hand_wave (direction), windmill (steps/speed/amount), takeoff (steps/speed/amount), "
-            "fitness (steps/speed/amount), greeting (direction/steps), shy (direction/steps), "
-            "radio_calisthenics, magic_circle.",
+            "Poses: sit, showcase, home.",
             PropertyList({Property("action", kPropertyTypeString, "sit"),
                           Property("steps", kPropertyTypeInteger, 3, 1, 100),
                           Property("speed", kPropertyTypeInteger, 700, 100, 3000),
                           Property("direction", kPropertyTypeInteger, 1, -1, 1),
-                          Property("amount", kPropertyTypeInteger, 30, 0, 170),
-                          Property("arm_swing", kPropertyTypeInteger, 50, 0, 170)}),
+                          Property("amount", kPropertyTypeInteger, 30, 0, 170)}),
             [this](const PropertyList& properties) -> ReturnValue {
                 std::string action = properties["action"].value<std::string>();
-                // All parameters have defaults; read them directly
                 int steps = properties["steps"].value<int>();
                 int speed = properties["speed"].value<int>();
                 int direction = properties["direction"].value<int>();
                 int amount = properties["amount"].value<int>();
-                int arm_swing = properties["arm_swing"].value<int>();
 
                 // Basic locomotion
                 if (action == "walk") {
-                    return QueueOrBusy(ACTION_WALK, steps, speed, direction, arm_swing);
+                    return QueueOrBusy(ACTION_WALK, steps, speed, direction, 0);
                 } else if (action == "turn") {
-                    return QueueOrBusy(ACTION_TURN, steps, speed, direction, arm_swing);
+                    return QueueOrBusy(ACTION_TURN, steps, speed, direction, 0);
                 } else if (action == "jump") {
                     return QueueOrBusy(ACTION_JUMP, steps, speed, 0, 0);
                 } else if (action == "swing") {
@@ -775,63 +694,9 @@ public:
                     return QueueOrBusy(ACTION_SHOWCASE, 1, 0, 0, 0);
                 } else if (action == "home") {
                     return QueueOrBusy(ACTION_HOME, 1, 1000, 1, 0);
-                }
-                // Hand motions
-                else if (action == "hands_up") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_HANDS_UP, 1, speed, direction, 0);
-                } else if (action == "hands_down") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_HANDS_DOWN, 1, speed, direction, 0);
-                } else if (action == "hand_wave") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_HAND_WAVE, 1, 0, 0, direction);
-                } else if (action == "windmill") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_WINDMILL, steps, speed, 0, amount);
-                } else if (action == "takeoff") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_TAKEOFF, steps, speed, 0, amount);
-                } else if (action == "fitness") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_FITNESS, steps, speed, 0, amount);
-                } else if (action == "greeting") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_GREETING, steps, 0, direction, 0);
-                } else if (action == "shy") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_SHY, steps, 0, direction, 0);
-                } else if (action == "radio_calisthenics") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_RADIO_CALISTHENICS, 1, 0, 0, 0);
-                } else if (action == "magic_circle") {
-                    if (!has_hands_) {
-                        return "Error: this action requires hand servos";
-                    }
-                    return QueueOrBusy(ACTION_MAGIC_CIRCLE, 1, 0, 0, 0);
                 } else {
                     return "Error: invalid action name. Available: walk, turn, jump, swing, "
-                           "moonwalk, bend, shake_leg, updown, whirlwind_leg, sit, showcase, home, "
-                           "hands_up, hands_down, hand_wave, windmill, takeoff, fitness, greeting, "
-                           "shy, radio_calisthenics, magic_circle";
+                           "moonwalk, bend, shake_leg, updown, whirlwind_leg, sit, showcase, home";
                 }
             });
 
@@ -841,18 +706,16 @@ public:
             "AI-authored servo programming. Send sequences in chunks: for more than 5 sequences, "
             "call this tool repeatedly with one short sequence each time; they queue in order. "
             "Supports move mode and oscillator mode. "
-            "Robot: hands swing up/down, legs abduct/adduct, feet pitch up/down. "
+            "This robot has four servos and no hands. "
             "Servos: "
             "ll (left leg) abduct/adduct, 0=fully out, 90=neutral, 180=fully in; "
             "rl (right leg) abduct/adduct, 0=fully in, 90=neutral, 180=fully out; "
             "lf (left foot) pitch, 0=fully up, 90=level, 180=fully down; "
-            "rf (right foot) pitch, 0=fully down, 90=level, 180=fully up; "
-            "lh (left hand) swing, 0=fully down, 90=level, 180=fully up; "
-            "rh (right hand) swing, 0=fully up, 90=level, 180=fully down. "
+            "rf (right foot) pitch, 0=fully down, 90=level, 180=fully up. "
             "sequence: one sequence object with action array 'a' and optional top-level "
             "'d' (delay in ms after the sequence, used as a pause between sequences). "
             "Each action: "
-            "move mode: 's' servo map (ll/rl/lf/rf/lh/rh, 0-180 deg), 'v' duration 100-3000 ms "
+            "move mode: 's' servo map (ll/rl/lf/rf, 0-180 deg), 'v' duration 100-3000 ms "
             "(default 1000), "
             "'d' post-action delay ms (default 0); "
             "oscillator mode: 'osc' with 'a' amplitudes 10-90 deg (default 20), 'o' center angles "
@@ -872,10 +735,6 @@ public:
             "{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":80},\\\"v\\\":800}]}\"}, then "
             "self.otto.home. "
             "Oscillator examples: "
-            "sync arms: "
-            "{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"lh\\\":30,\\\"rh\\\":30},"
-            "\\\"o\\\":{\\\"lh\\\":90,\\\"rh\\\":-90},\\\"p\\\":500,\\\"c\\\":5.0}}],\\\"d\\\":0}"
-            "\"}; "
             "alternating legs: "
             "{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":20,\\\"rl\\\":20},"
             "\\\"o\\\":{\\\"ll\\\":90,\\\"rl\\\":-90},\\\"ph\\\":{\\\"rl\\\":180},\\\"p\\\":600,"
@@ -883,10 +742,6 @@ public:
             "single-leg with fixed foot: "
             "{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":45},\\\"o\\\":{"
             "\\\"ll\\\":90,\\\"lf\\\":90},\\\"p\\\":400,\\\"c\\\":4.0}}],\\\"d\\\":0}\"}; "
-            "hands and legs: "
-            "{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"lh\\\":25,\\\"rh\\\":25,"
-            "\\\"ll\\\":15},\\\"o\\\":{\\\"lh\\\":90,\\\"rh\\\":90,\\\"ll\\\":90,\\\"lf\\\":90},"
-            "\\\"ph\\\":{\\\"rh\\\":180},\\\"p\\\":800,\\\"c\\\":6.0}}],\\\"d\\\":500}\"}; "
             "fast sway: "
             "{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":30,\\\"rl\\\":30},"
             "\\\"o\\\":{\\\"ll\\\":90,\\\"rl\\\":90},\\\"ph\\\":{\\\"rl\\\":180},\\\"p\\\":300,"
@@ -916,7 +771,7 @@ public:
             "self.otto.set_trim",
             "Calibrate one servo. Sets a trim used for the standing rest pose; the value is saved "
             "in NVS. "
-            "servo_type: left_leg/right_leg/left_foot/right_foot/left_hand/right_hand; "
+            "servo_type: left_leg/right_leg/left_foot/right_foot; "
             "trim_value: offset in degrees (-50 to 50)",
             PropertyList({Property("servo_type", kPropertyTypeString, "left_leg"),
                           Property("trim_value", kPropertyTypeInteger, 0, -50, 50)}),
@@ -926,16 +781,12 @@ public:
 
                 ESP_LOGI(TAG, "Set servo trim: %s = %d deg", servo_type.c_str(), trim_value);
 
-                // Load current trim values
                 Settings settings("otto_trims", true);
                 int left_leg = settings.GetInt("left_leg", 0);
                 int right_leg = settings.GetInt("right_leg", 0);
                 int left_foot = settings.GetInt("left_foot", 0);
                 int right_foot = settings.GetInt("right_foot", 0);
-                int left_hand = settings.GetInt("left_hand", 0);
-                int right_hand = settings.GetInt("right_hand", 0);
 
-                // Update the requested servo trim
                 if (servo_type == "left_leg") {
                     left_leg = trim_value;
                     settings.SetInt("left_leg", left_leg);
@@ -948,24 +799,12 @@ public:
                 } else if (servo_type == "right_foot") {
                     right_foot = trim_value;
                     settings.SetInt("right_foot", right_foot);
-                } else if (servo_type == "left_hand") {
-                    if (!has_hands_) {
-                        return "Error: this robot has no hand servos";
-                    }
-                    left_hand = trim_value;
-                    settings.SetInt("left_hand", left_hand);
-                } else if (servo_type == "right_hand") {
-                    if (!has_hands_) {
-                        return "Error: this robot has no hand servos";
-                    }
-                    right_hand = trim_value;
-                    settings.SetInt("right_hand", right_hand);
                 } else {
-                    return "Error: invalid servo type. Use left_leg, right_leg, left_foot, "
-                           "right_foot, left_hand, or right_hand";
+                    return "Error: invalid servo type. Use left_leg, right_leg, left_foot, or "
+                           "right_foot";
                 }
 
-                otto_.SetTrims(left_leg, right_leg, left_foot, right_foot, left_hand, right_hand);
+                otto_.SetTrims(left_leg, right_leg, left_foot, right_foot);
 
                 QueueAction(ACTION_JUMP, 1, 500, 0, 0);
 
@@ -981,16 +820,12 @@ public:
                                int right_leg = settings.GetInt("right_leg", 0);
                                int left_foot = settings.GetInt("left_foot", 0);
                                int right_foot = settings.GetInt("right_foot", 0);
-                               int left_hand = settings.GetInt("left_hand", 0);
-                               int right_hand = settings.GetInt("right_hand", 0);
 
                                std::string result =
                                    "{\"left_leg\":" + std::to_string(left_leg) +
                                    ",\"right_leg\":" + std::to_string(right_leg) +
                                    ",\"left_foot\":" + std::to_string(left_foot) +
-                                   ",\"right_foot\":" + std::to_string(right_foot) +
-                                   ",\"left_hand\":" + std::to_string(left_hand) +
-                                   ",\"right_hand\":" + std::to_string(right_hand) + "}";
+                                   ",\"right_foot\":" + std::to_string(right_foot) + "}";
 
                                ESP_LOGI(TAG, "Current trims: %s", result.c_str());
                                return result;
@@ -1096,7 +931,7 @@ public:
         ESP_LOGI(TAG, "Servos detached (PWM off, pins Hi-Z)");
     }
 
-    // Greeting needs hand servos; this SKU uses jump as the morning stretch.
+    // Morning stretch: a small jump (this SKU has no hands).
     void QueueMorningWake() {
         ESP_LOGI(TAG, "Queueing morning stretch");
         QueueAction(ACTION_JUMP, 1, 800, 0, 0);
@@ -1127,6 +962,9 @@ public:
                 break;
             case kOttoFidgetWalk:
                 action_type = ACTION_WALK;
+                break;
+            case kOttoFidgetSit:
+                action_type = ACTION_SIT;
                 break;
             default:
                 return false;

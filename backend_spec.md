@@ -639,14 +639,13 @@ Unified locomotion / dance / pose tool.
 | `speed` | int | 700 | 100–3000 | **Smaller = faster** (ms-style) |
 | `direction` | int | 1 | -1, 0, 1 | 1=forward/left, -1=back/right, 0=both |
 | `amount` | int | 30 | 0–170 | Amplitude |
-| `arm_swing` | int | 50 | 0–170 | Arm swing for walk/turn |
 
-**`action` values (always available on 4-servo no-camera Otto):**
+**`action` values (4-servo no-hands Mickey):**
 
 | action | Extra args used | Notes |
 |--------|-----------------|-------|
-| `walk` | steps, speed, direction, arm_swing | Forward/back walk |
-| `turn` | steps, speed, direction, arm_swing | Turn in place |
+| `walk` | steps, speed, direction | Forward/back walk |
+| `turn` | steps, speed, direction | Turn in place |
 | `jump` | steps, speed | |
 | `swing` | steps, speed, amount | |
 | `moonwalk` | steps, speed, direction, amount | |
@@ -658,10 +657,9 @@ Unified locomotion / dance / pose tool.
 | `showcase` | | Demo sequence |
 | `home` | | Return to stand / home |
 
-**Hand actions (fail with `"错误：此动作需要手部舵机支持"` without hand servos):**  
-`hands_up`, `hands_down`, `hand_wave`, `windmill`, `takeoff`, `fitness`, `greeting`, `shy`, `radio_calisthenics`, `magic_circle`.
+This robot has **no hand servos**. Do not advertise or call `hands_up`, `hands_down`, `hand_wave`, `windmill`, `takeoff`, `fitness`, `greeting`, `shy`, `radio_calisthenics`, `magic_circle`, or `arm_swing`.
 
-Unknown action returns a Chinese error listing all names.
+Unknown action returns an error listing the available names above.
 
 **Voice mapping for the LLM (examples):**
 
@@ -702,7 +700,7 @@ Each action is either:
 
 **Move mode:** `s` map of servo → 0–180 deg, `v` duration 100–3000 ms (default 1000), `d` post-delay ms.
 
-Servo keys: `ll` left leg, `rl` right leg, `lf` left foot, `rf` right foot, `lh` left hand, `rh` right hand.
+Servo keys: `ll` left leg, `rl` right leg, `lf` left foot, `rf` right foot. There are no hand keys.
 
 **Oscillator mode:** `osc` object with `a` amplitudes, `o` centers, `ph` phase degrees, `p` period ms, `c` cycle count.
 
@@ -721,16 +719,16 @@ The `sequence` property is a **string** (JSON escaped inside the MCP arguments),
 
 #### `self.otto.set_trim`
 
-- `servo_type`: `left_leg` | `right_leg` | `left_foot` | `right_foot` | `left_hand` | `right_hand`
+- `servo_type`: `left_leg` | `right_leg` | `left_foot` | `right_foot`
 - `trim_value`: int -50..50, persisted in NVS `otto_trims`
-- Triggers a small jump to preview. Hand types error if no hands.
+- Triggers a small jump to preview.
 
 #### `self.otto.get_trims`
 
 Returns JSON string:
 
 ```json
-{ "left_leg": 0, "right_leg": 0, "left_foot": 0, "right_foot": 0, "left_hand": 0, "right_hand": 0 }
+{ "left_leg": 0, "right_leg": 0, "left_foot": 0, "right_foot": 0 }
 ```
 
 #### `self.otto.get_status`

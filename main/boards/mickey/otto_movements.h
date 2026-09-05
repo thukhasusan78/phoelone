@@ -23,32 +23,24 @@
 // -- Servo delta limit default. degree / sec
 #define SERVO_LIMIT_DEFAULT 240
 
-// -- Servo indexes for easy access
+// Mickey is a 4-servo SKU (legs + feet). There are no hand servos.
 #define LEFT_LEG 0
 #define RIGHT_LEG 1
 #define LEFT_FOOT 2
 #define RIGHT_FOOT 3
-#define LEFT_HAND 4
-#define RIGHT_HAND 5
-#define SERVO_COUNT 6
+#define SERVO_COUNT 4
 
 class Otto {
 public:
     Otto();
     ~Otto();
 
-    //-- Otto initialization
-    void Init(int left_leg, int right_leg, int left_foot, int right_foot, int left_hand = -1,
-              int right_hand = -1);
-    //-- Attach & detach functions
+    void Init(int left_leg, int right_leg, int left_foot, int right_foot);
     void AttachServos();
     void DetachServos();
 
-    //-- Oscillator Trims
-    void SetTrims(int left_leg, int right_leg, int left_foot, int right_foot, int left_hand = 0,
-                  int right_hand = 0);
+    void SetTrims(int left_leg, int right_leg, int left_foot, int right_foot);
 
-    //-- Predetermined Motion Functions
     void MoveServos(int time, int servo_target[]);
     void MoveSingle(int position, int servo_number);
     void OscillateServos(int amplitude[SERVO_COUNT], int offset[SERVO_COUNT], int period,
@@ -56,23 +48,20 @@ public:
     void Execute2(int amplitude[SERVO_COUNT], int center_angle[SERVO_COUNT], int period,
                   double phase_diff[SERVO_COUNT], float steps);
 
-    //-- HOME = Otto at rest position
-    void Home(bool hands_down = true);
+    void Home();
     bool GetRestState();
     void SetRestState(bool state);
     void RequestStop();
     void ClearStop();
     bool IsStopRequested() const;
 
-    //-- Predetermined Motion Functions
     void Jump(float steps = 1, int period = 2000);
 
-    void Walk(float steps = 4, int period = 1000, int dir = FORWARD, int amount = 0,
-              int amplitude = 30);
-    void Turn(float steps = 4, int period = 2000, int dir = LEFT, int amount = 0);
+    void Walk(float steps = 4, int period = 1000, int dir = FORWARD, int amplitude = 30);
+    void Turn(float steps = 4, int period = 2000, int dir = LEFT);
     void Bend(int steps = 1, int period = 1400, int dir = LEFT);
     void ShakeLeg(int steps = 1, int period = 2000, int dir = RIGHT);
-    void Sit();  // Sit
+    void Sit();
 
     void UpDown(float steps = 1, int period = 1000, int height = 20);
     void Swing(float steps = 1, int period = 1000, int height = 20);
@@ -84,21 +73,8 @@ public:
     void Crusaito(float steps = 1, int period = 900, int height = 20, int dir = FORWARD);
     void Flapping(float steps = 1, int period = 1000, int height = 20, int dir = FORWARD);
     void WhirlwindLeg(float steps = 1, int period = 300, int amplitude = 30);
+    void Showcase();
 
-    // -- Hand motions
-    void HandsUp(int period = 1000, int dir = 0);      // Raise both hands
-    void HandsDown(int period = 1000, int dir = 0);    // Lower both hands
-    void HandWave(int dir = LEFT);  // Wave
-    void Windmill(float steps = 10, int period = 500, int amplitude = 90);  // Windmill
-    void Takeoff(float steps = 5, int period = 300, int amplitude = 40);   // Takeoff
-    void Fitness(float steps = 5, int period = 1000, int amplitude = 25);  // Fitness
-    void Greeting(int dir = LEFT, float steps = 5);  // Greeting
-    void Shy(int dir = LEFT, float steps = 5);  // Shy
-    void RadioCalisthenics();  // Radio calisthenics
-    void MagicCircle();  // Magic circle
-    void Showcase();  // Showcase (chained motions)
-
-    // -- Servo limiter
     void EnableServoLimit(int speed_limit_degree_per_sec = SERVO_LIMIT_DEFAULT);
     void DisableServoLimit();
 
@@ -113,12 +89,10 @@ private:
     float increment_[SERVO_COUNT];
 
     bool is_otto_resting_;
-    bool has_hands_;  // True if hand servos are present
     std::atomic<bool> stop_requested_{false};
 
     void Execute(int amplitude[SERVO_COUNT], int offset[SERVO_COUNT], int period,
                  double phase_diff[SERVO_COUNT], float steps);
-
 };
 
 #endif  // __OTTO_MOVEMENTS_H__

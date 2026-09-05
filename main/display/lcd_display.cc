@@ -1067,7 +1067,11 @@ void LcdDisplay::SetChatMessage(const char* role, const char* content) {
         return;
     }
     lv_anim_delete(chat_message_label_, nullptr);
+    lv_label_set_long_mode(chat_message_label_, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(chat_message_label_, "");
+    lv_obj_invalidate(chat_message_label_);
     lv_label_set_text(chat_message_label_, content);
+    lv_obj_invalidate(chat_message_label_);
     // Show bottom_bar_ only when there is content (and subtitle is not globally hidden)
     if (bottom_bar_ != nullptr) {
         if (content == nullptr || content[0] == '\0') {
@@ -1089,7 +1093,9 @@ void LcdDisplay::ClearChatMessages() {
     DisplayLockGuard lock(this);
     // In non-wechat mode, just clear the chat message label and hide the bar
     if (chat_message_label_ != nullptr) {
+        lv_anim_delete(chat_message_label_, nullptr);
         lv_label_set_text(chat_message_label_, "");
+        lv_obj_invalidate(chat_message_label_);
     }
     if (bottom_bar_ != nullptr) {
         lv_obj_add_flag(bottom_bar_, LV_OBJ_FLAG_HIDDEN);

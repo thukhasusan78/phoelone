@@ -28,6 +28,7 @@ The backend is a remote FastAPI service. Treat the JSON/MCP shapes in §4 as a f
 | [10. File map](#10-file-map) | Where to edit |
 | [11. Decision log](#11-decision-log-firmware) | Frozen product choices |
 | [12. XiaoZhi first-boot parity](#12-xiaozhi-first-boot-parity-vs-78xiaozhi-esp32) | Wi-Fi pairing, activation code, ESP-SR, NVS/OTA recovery vs stock |
+| Vision | [VISION_PLAN.md](VISION_PLAN.md) — coprocessor Face ID / scene / photos |
 
 ---
 
@@ -51,7 +52,7 @@ The backend is a remote FastAPI service. Treat the JSON/MCP shapes in §4 as a f
 - MPU6050 (SDA 41 / SCL 42 / INT 40) and TTP223 (GPIO 47): SensorTask samples hardware. MCP IMU/touch return live JSON (`wired:true`). Light still `wired:false`.
 - `NON_CAMERA_VERSION_CONFIG`: `i2c_sda_pin` / `i2c_scl_pin` = GPIO **41/42**.
 - Camera-variant I2C (GPIO 15/16) is **speaker BCLK/LRCK** on this robot — never reuse.
-- Hands: **Done.** `left_hand_pin` / `right_hand_pin` = `GPIO_NUM_NC`. GPIO **12 is LCD CS only**. Hand tools return `Error: this action requires hand servos`.
+- Hands: **Removed.** Four servos only (legs/feet). GPIO **12 is LCD CS only**. No hand MCP actions, trims, or `lh`/`rh` sequence keys.
 - `self.otto.stop`: **Done.** Cooperative stop (no `vTaskDelete`); oscillator re-attach holds PWM; `Home()` always reapplies 90°.
 - JSON `ping`: **Done.** `OnIncomingJson` replies with `pong`; no `Unknown message type: ping`.
 - Idle director: **Done.** `mickey_behavior.cc` face GIFs in `kDeviceStateIdle`; **body motion only after 60 s inactivity**, then slow `swing` plus occasional reduced `walk`. Wake word, pet, pickup, fall, dashboard `self.otto.*`, and deep sleep preempt via `OttoCancelFidget()`. Companion keepalive (`CONFIG_COMPANION_KEEP_CHANNEL`) keeps `/xiaozhi/v1/` open while idle (Wi-Fi PERFORMANCE, reconnect backoff 1–60 s) so the dashboard can send MCP without a wake word. Deep sleep still closes the socket.
@@ -90,13 +91,12 @@ Reject these for MPU / light / touch:
 
 `0`, `3–7`, `9–12`, `14–18`, `19–21` (USB 19/20, charge 21), `26–39` (octal flash/PSRAM 26–37 plus servos 38/39), `43`, `44` (UART0 monitor on many S3 modules), `46`.
 
-### 2.3 Hand-pin P0 policy
+### 2.3 No-hands policy
 
-Set `left_hand_pin` and `right_hand_pin` to `GPIO_NUM_NC` **or** `#define OTTO_HAS_HANDS 0` so `has_hands_ == false`.
+Mickey has four servos. Hand pin fields, `has_hands_`, and hand MCP actions are gone.
 
 - LCD CS is strapped to GND. `display_cs_pin` is `GPIO_NUM_NC`. GPIO 12 is unused; do not attach an LEDC servo to it unless you have confirmed it is free.
-- GPIO 8 becomes free **after** hands are NC. Do not assign 8 to a sensor until that change is flashed and verified.
-- Hand MCP actions must keep returning the existing error string (`错误：此动作需要手部舵机支持` or the English equivalent if you localize later).
+- GPIO 8 is a candidate vision IRQ (`VISION_PLAN.md`). Confirm on the bench before soldering.
 
 ### 2.4 Proposed sensor pins (confirm on the bench)
 
@@ -185,7 +185,7 @@ MCP tool callbacks (application task)
 | `main/boards/mickey/mickey_sensors.h` | Pin macros, snapshot struct, `Start()`, `GetSnapshot()` |
 | `main/boards/mickey/mickey_sensors.cc` | I2C init, MPU WHO_AM_I `0x68`/`0x69`, DMP-less raw accel/gyro, INT ISR, light, touch |
 | `main/boards/mickey/mickey_behavior.h/.cc` | Idle director (P1) |
-| `config.h` | Pin `#define`s + `OTTO_HAS_HANDS 0` |
+| `config.h` | Pin `#define`s; four servos only, no hand pins |
 
 Keep MCP registration in `otto_controller.cc` (or a small `RegisterMickeySensorTools()` called from there) so tool names stay `self.mickey.*`.
 
@@ -577,7 +577,7 @@ Out of firmware scope: 4G, MQTT voice, LivingAI assets, Python. SmartConfig is a
 
 | Path | Change |
 |------|--------|
-| `main/boards/mickey/config.h` | **Done:** hands NC; MPU 41/42/40; TTP223 47 |
+| `main/boards/mickey/config.h` | **Done:** four servos only; MPU 41/42/40; TTP223 47 |
 | `main/boards/mickey/oscillator.cc` | **Done:** hold on re-Attach |
 | `main/boards/mickey/otto_movements.cc` | **Done:** Home always reapplies; cooperative abort |
 | `main/boards/mickey/otto_controller.cc` | **Done:** cooperative stop; fidget source flag; IMU/touch MCP snapshots |
