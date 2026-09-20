@@ -5,8 +5,14 @@
 #define TAG "LvglGif"
 
 LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
-    : gif_(nullptr), timer_(nullptr), last_call_(0), playing_(false), loaded_(false),
-      loop_delay_ms_(0), loop_waiting_(false), loop_wait_start_(0) {
+    : gif_(nullptr),
+      timer_(nullptr),
+      last_call_(0),
+      playing_(false),
+      loaded_(false),
+      loop_delay_ms_(0),
+      loop_waiting_(false),
+      loop_wait_start_(0) {
     if (!img_dsc || !img_dsc->data) {
         ESP_LOGE(TAG, "Invalid image descriptor");
         return;
@@ -39,9 +45,7 @@ LvglGif::LvglGif(const lv_img_dsc_t* img_dsc)
 }
 
 // Destructor
-LvglGif::~LvglGif() {
-    Cleanup();
-}
+LvglGif::~LvglGif() { Cleanup(); }
 
 // LvglImage interface implementation
 const lv_img_dsc_t* LvglGif::image_dsc() const {
@@ -59,10 +63,12 @@ void LvglGif::Start() {
     }
 
     if (!timer_) {
-        timer_ = lv_timer_create([](lv_timer_t* timer) {
-            LvglGif* gif_obj = static_cast<LvglGif*>(lv_timer_get_user_data(timer));
-            gif_obj->NextFrame();
-        }, 10, this);
+        timer_ = lv_timer_create(
+            [](lv_timer_t* timer) {
+                LvglGif* gif_obj = static_cast<LvglGif*>(lv_timer_get_user_data(timer));
+                gif_obj->NextFrame();
+            },
+            10, this);
     }
 
     if (timer_) {
@@ -71,10 +77,10 @@ void LvglGif::Start() {
         last_call_ = lv_tick_get();
         lv_timer_resume(timer_);
         lv_timer_reset(timer_);
-        
+
         // Render first frame
         NextFrame();
-        
+
         ESP_LOGD(TAG, "GIF animation started");
     }
 }
@@ -119,13 +125,9 @@ void LvglGif::Stop() {
     }
 }
 
-bool LvglGif::IsPlaying() const {
-    return playing_;
-}
+bool LvglGif::IsPlaying() const { return playing_; }
 
-bool LvglGif::IsLoaded() const {
-    return loaded_;
-}
+bool LvglGif::IsLoaded() const { return loaded_; }
 
 int32_t LvglGif::GetLoopCount() const {
     if (!loaded_ || !gif_) {
@@ -142,9 +144,7 @@ void LvglGif::SetLoopCount(int32_t count) {
     gif_->loop_count = count;
 }
 
-uint32_t LvglGif::GetLoopDelay() const {
-    return loop_delay_ms_;
-}
+uint32_t LvglGif::GetLoopDelay() const { return loop_delay_ms_; }
 
 void LvglGif::SetLoopDelay(uint32_t delay_ms) {
     loop_delay_ms_ = delay_ms;
@@ -165,8 +165,10 @@ uint16_t LvglGif::height() const {
     return gif_->height;
 }
 
-void LvglGif::SetFrameCallback(std::function<void()> callback) {
-    frame_callback_ = callback;
+void LvglGif::SetFrameCallback(std::function<void()> callback) { frame_callback_ = callback; }
+
+void LvglGif::SetCompletionCallback(std::function<void()> callback) {
+    completion_callback_ = std::move(callback);
 }
 
 void LvglGif::NextFrame() {
@@ -206,6 +208,9 @@ void LvglGif::NextFrame() {
             lv_timer_pause(timer_);
         }
         ESP_LOGD(TAG, "GIF animation completed");
+        if (completion_callback_) {
+            completion_callback_();
+        }
         return;
     }
 
@@ -223,7 +228,7 @@ void LvglGif::NextFrame() {
     // Render current frame
     if (gif_->canvas) {
         gd_render_frame(gif_, gif_->canvas);
-        
+
         // Call frame callback if set
         if (frame_callback_) {
             frame_callback_();
@@ -246,7 +251,7 @@ void LvglGif::Cleanup() {
 
     playing_ = false;
     loaded_ = false;
-    
+
     // Clear image descriptor
     memset(&img_dsc_, 0, sizeof(img_dsc_));
 }

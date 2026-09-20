@@ -1,4 +1,5 @@
 #include "lcd_display.h"
+#include "application.h"
 #include "assets/lang_config.h"
 #include "gif/lvgl_gif.h"
 #include "lvgl_theme.h"
@@ -290,6 +291,7 @@ MipiLcdDisplay::MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel
 }
 
 LcdDisplay::~LcdDisplay() {
+    gif_sequence_id_++;
     SetPreviewImage(nullptr);
 
     // Clean up GIF controller
@@ -1103,7 +1105,29 @@ void LcdDisplay::ClearChatMessages() {
 }
 #endif
 
+bool LcdDisplay::CollectionHasGif(const char* name) {
+    if (name == nullptr || current_theme_ == nullptr) {
+        return false;
+    }
+    auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
+    if (emoji_collection == nullptr || !emoji_collection->HasEmoji(name)) {
+        return false;
+    }
+    auto image = emoji_collection->GetEmojiImage(name);
+    return image != nullptr && image->IsGif();
+}
+
+bool LcdDisplay::ShouldPrependBlink(const char* emotion) {
+    if (emotion == nullptr || strcmp(emotion, "blink") == 0) {
+        return false;
+    }
+    return CollectionHasGif("blink");
+}
+
 void LcdDisplay::SetEmotion(const char* emotion) {
+    if (emotion == nullptr || emotion[0] == '\0') {
+        return;
+    }
     if (!setup_ui_called_) {
         ESP_LOGW(TAG, "SetEmotion('%s') called before SetupUI() - emotion will not be displayed!",
                  emotion);
@@ -1118,7 +1142,96 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         return;
     }
 
-    auto emoji_collection = static_cast<LvglTheme*>(current_theme_)->emoji_collection();
+    if (!emotion_one_shot_playing_ && !emotion_blinking_ && requested_emotion_ == emotion) {
+        return;
+    }
+
+    requested_emotion_ = emotion;
+    if (emotion_one_shot_playing_) {
+        return;
+    }
+    if (emotion_blinking_) {
+        return;
+    }
+    BeginRequestedEmotion();
+}
+
+void LcdDisplay::SetOneShotEmotion(const char* emotion) {
+    if (emotion == nullptr || emotion[0] == '\0') {
+        return;
+    }
+    if (emoji_image_ == nullptr || !CollectionHasGif(emotion)) {
+        SetEmotion(emotion);
+        return;
+    }
+
+    emotion_one_shot_playing_ = true;
+    emotion_blinking_ = false;
+    if (!ApplyEmotionVisual(emotion, false)) {
+        emotion_one_shot_playing_ = false;
+        if (!requested_emotion_.empty()) {
+            BeginRequestedEmotion();
+        }
+    }
+}
+
+void LcdDisplay::BeginRequestedEmotion() {
+    if (requested_emotion_.empty()) {
+        return;
+    }
+    if (ShouldPrependBlink(requested_emotion_.c_str())) {
+        emotion_blinking_ = true;
+        if (!ApplyEmotionVisual("blink", false)) {
+            emotion_blinking_ = false;
+            ApplyEmotionVisual(requested_emotion_.c_str(), true);
+        }
+        return;
+    }
+    ApplyEmotionVisual(requested_emotion_.c_str(), true);
+}
+
+bool LcdDisplay::StartGifEmotion(const LvglImage* image, bool loop) {
+    if (image == nullptr) {
+        return false;
+    }
+
+    if (gif_controller_) {
+        gif_controller_->Stop();
+        gif_controller_.reset();
+    }
+
+    gif_controller_ = std::make_unique<LvglGif>(image->image_dsc());
+    if (!gif_controller_->IsLoaded()) {
+        gif_controller_.reset();
+        return false;
+    }
+
+    const uint32_t sequence_id = ++gif_sequence_id_;
+    gif_controller_->SetFrameCallback(
+        [this]() { lv_image_set_src(emoji_image_, gif_controller_->image_dsc()); });
+    if (!loop) {
+        gif_controller_->SetLoopCount(1);
+        gif_controller_->SetCompletionCallback([this, sequence_id]() {
+            Application::GetInstance().Schedule(
+                [this, sequence_id]() { OnGifPlaybackFinished(sequence_id); });
+        });
+    }
+
+    lv_image_set_src(emoji_image_, gif_controller_->image_dsc());
+    gif_controller_->Start();
+    lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+    return true;
+}
+
+bool LcdDisplay::ApplyEmotionVisual(const char* emotion, bool loop) {
+    if (emoji_image_ == nullptr || emotion == nullptr) {
+        return false;
+    }
+
+    auto emoji_collection = current_theme_ != nullptr
+                                ? static_cast<LvglTheme*>(current_theme_)->emoji_collection()
+                                : nullptr;
     auto image = emoji_collection != nullptr ? emoji_collection->GetEmojiImage(emotion) : nullptr;
     if (image == nullptr) {
         auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
@@ -1130,6 +1243,7 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         }
         if (utf8 != nullptr && emoji_label_ != nullptr) {
             DisplayLockGuard lock(this);
+            gif_sequence_id_++;
             if (gif_controller_) {
                 gif_controller_->Stop();
                 gif_controller_.reset();
@@ -1138,48 +1252,35 @@ void LcdDisplay::SetEmotion(const char* emotion) {
             lv_label_set_text(emoji_label_, utf8);
             lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
             lv_obj_remove_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+            return true;
         }
-        return;
+        return false;
     }
 
     DisplayLockGuard lock(this);
-    // Stop any running GIF animation in the same lock scope as setting new image
-    // to prevent LVGL from accessing freed image data between operations
-    if (gif_controller_) {
-        gif_controller_->Stop();
-        gif_controller_.reset();
-    }
+    bool started = false;
     if (image->IsGif()) {
-        // Create new GIF controller
-        gif_controller_ = std::make_unique<LvglGif>(image->image_dsc());
-
-        if (gif_controller_->IsLoaded()) {
-            // Set up frame update callback
-            gif_controller_->SetFrameCallback(
-                [this]() { lv_image_set_src(emoji_image_, gif_controller_->image_dsc()); });
-
-            // Set initial frame and start animation
-            lv_image_set_src(emoji_image_, gif_controller_->image_dsc());
-            gif_controller_->Start();
-
-            // Show GIF, hide others
-            lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
-        } else {
+        started = StartGifEmotion(image, loop);
+        if (!started) {
             ESP_LOGE(TAG, "Failed to load GIF for emotion: %s", emotion);
-            gif_controller_.reset();
         }
     } else {
+        gif_sequence_id_++;
+        if (gif_controller_) {
+            gif_controller_->Stop();
+            gif_controller_.reset();
+        }
         lv_image_set_src(emoji_image_, image->image_dsc());
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+        started = true;
     }
 
 #if CONFIG_USE_WECHAT_MESSAGE_STYLE
     // In WeChat message style, if emotion is neutral, don't display it
     uint32_t child_count = lv_obj_get_child_cnt(content_);
     if (strcmp(emotion, "neutral") == 0 && child_count > 0) {
-        // Stop GIF animation if running
+        gif_sequence_id_++;
         if (gif_controller_) {
             gif_controller_->Stop();
             gif_controller_.reset();
@@ -1189,6 +1290,28 @@ void LcdDisplay::SetEmotion(const char* emotion) {
         lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
     }
 #endif
+    return started;
+}
+
+void LcdDisplay::OnGifPlaybackFinished(uint32_t sequence_id) {
+    if (sequence_id != gif_sequence_id_) {
+        return;
+    }
+
+    if (emotion_one_shot_playing_) {
+        emotion_one_shot_playing_ = false;
+        if (!requested_emotion_.empty()) {
+            BeginRequestedEmotion();
+        }
+        return;
+    }
+
+    if (emotion_blinking_) {
+        emotion_blinking_ = false;
+        if (!requested_emotion_.empty()) {
+            ApplyEmotionVisual(requested_emotion_.c_str(), true);
+        }
+    }
 }
 
 void LcdDisplay::SetTheme(Theme* theme) {

@@ -50,6 +50,28 @@ class BuildDefaultAssetsTest(unittest.TestCase):
         )
         self.assertEqual(BUILD.split_custom_wake_word_phrases(" , , "), [])
 
+    def test_emoji_overlay_replaces_same_name_and_adds_new(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory) / "base"
+            overlay = Path(directory) / "overlay"
+            assets = Path(directory) / "assets"
+            base.mkdir()
+            overlay.mkdir()
+            assets.mkdir()
+            (base / "happy.gif").write_bytes(b"base-happy")
+            (base / "blink.gif").write_bytes(b"base-blink")
+            (overlay / "blink.gif").write_bytes(b"overlay-blink")
+            (overlay / "focus.gif").write_bytes(b"overlay-focus")
+
+            emoji_list = BUILD.process_emoji_collection(str(base), str(assets))
+            merged = BUILD.merge_emoji_overlay(str(overlay), str(assets), emoji_list)
+            by_name = {entry["name"]: entry["file"] for entry in merged}
+
+            self.assertEqual(set(by_name), {"happy", "blink", "focus"})
+            self.assertEqual((assets / "blink.gif").read_bytes(), b"overlay-blink")
+            self.assertEqual((assets / "focus.gif").read_bytes(), b"overlay-focus")
+            self.assertEqual((assets / "happy.gif").read_bytes(), b"base-happy")
+
 
 if __name__ == "__main__":
     unittest.main()

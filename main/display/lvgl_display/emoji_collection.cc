@@ -18,6 +18,13 @@ const LvglImage* EmojiCollection::GetEmojiImage(const char* name) {
     return nullptr;
 }
 
+bool EmojiCollection::HasEmoji(const char* name) const {
+    if (name == nullptr || name[0] == '\0') {
+        return false;
+    }
+    return emoji_collection_.find(name) != emoji_collection_.end();
+}
+
 EmojiCollection::~EmojiCollection() {
     for (auto it = emoji_collection_.begin(); it != emoji_collection_.end(); ++it) {
         delete it->second;

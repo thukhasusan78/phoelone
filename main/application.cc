@@ -15,8 +15,8 @@
 #include <esp_log.h>
 #include <arpa/inet.h>
 #include <cJSON.h>
-#include <cstring>
 #include <cstdint>
+#include <cstring>
 
 #define TAG "Application"
 
@@ -967,37 +967,47 @@ void Application::HandleStopListeningEvent() {
 }
 
 void Application::HandleWakeWordDetectedEvent() {
-    if (!protocol_) {
-        return;
-    }
-
     auto state = GetDeviceState();
     auto wake_word = audio_service_.GetLastWakeWord();
     ESP_LOGI(TAG, "Wake word detected: %s (state: %d)", wake_word.c_str(), (int)state);
 
-    if (state == kDeviceStateIdle) {
-        BeginWakeWordInvoke(wake_word);
-    } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
+    if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         AbortSpeaking(kAbortReasonWakeWordDetected);
         // Clear send queue to avoid sending residues to server
         while (audio_service_.PopPacketFromSendQueue())
             ;
+    }
 
+    PlayWakeWordReaction();
+
+    if (!protocol_) {
+        audio_service_.EnableWakeWordDetection(true);
+        return;
+    }
+
+    if (state == kDeviceStateIdle) {
+        BeginWakeWordInvoke(wake_word);
+    } else if (state == kDeviceStateSpeaking || state == kDeviceStateListening) {
         if (state == kDeviceStateListening) {
             protocol_->SendStartListening(GetDefaultListeningMode());
-            audio_service_.ResetDecoder();
-            audio_service_.PlaySound(Lang::Sounds::OGG_POPUP);
             // Re-enable wake word detection as it was stopped by the detection itself
             audio_service_.EnableWakeWordDetection(true);
         } else {
-            // Play popup sound and start listening again
-            play_popup_on_listening_ = true;
             SetListeningMode(GetDefaultListeningMode());
         }
     } else if (state == kDeviceStateActivating) {
         // Restart the activation check if the wake word is detected during activation
         SetDeviceState(kDeviceStateIdle);
     }
+}
+
+void Application::PlayWakeWordReaction() {
+    auto display = Board::GetInstance().GetDisplay();
+    display->SetOneShotEmotion("focus");
+    audio_service_.ResetDecoder();
+    audio_service_.PlaySound(Lang::Sounds::OGG_WAKEWORD);
+    wakeword_ack_playing_ = true;
+    play_popup_on_listening_ = false;
 }
 
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
@@ -1070,9 +1080,6 @@ void Application::ContinueWakeWordInvoke(const std::string& wake_word) {
     protocol_->SendWakeWordDetected(wake_word);
     SetListeningMode(GetDefaultListeningMode());
 #else
-    // Set flag to play popup sound after state changes to listening
-    // (PlaySound here would be cleared by ResetDecoder in EnableVoiceProcessing)
-    play_popup_on_listening_ = true;
     SetListeningMode(GetDefaultListeningMode());
 #endif
 }
@@ -1147,7 +1154,9 @@ void Application::HandleStateChangedEvent() {
                 // Only AFE wake word can be detected in speaking mode
                 audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
-            audio_service_.ResetDecoder();
+            if (!wakeword_ack_playing_) {
+                audio_service_.ResetDecoder();
+            }
             break;
         case kDeviceStateWifiConfiguring:
             audio_service_.EnableVoiceProcessing(false);
@@ -1165,6 +1174,13 @@ void Application::StartListeningAudio() {
     if (GetDeviceState() != kDeviceStateListening) {
         return;
     }
+
+    // Keep the local wake acknowledgement intact until it finishes draining.
+    if (wakeword_ack_playing_ && !audio_service_.IsPlaybackIdle()) {
+        pending_listening_start_ = true;
+        return;
+    }
+    wakeword_ack_playing_ = false;
 
     // Send the start listening command
     protocol_->SendStartListening(listening_mode_);

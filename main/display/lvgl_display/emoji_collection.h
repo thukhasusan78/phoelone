@@ -14,6 +14,7 @@ class EmojiCollection {
 public:
     virtual void AddEmoji(const std::string& name, LvglImage* image);
     virtual const LvglImage* GetEmojiImage(const char* name);
+    virtual bool HasEmoji(const char* name) const;
     virtual ~EmojiCollection();
 
 private:

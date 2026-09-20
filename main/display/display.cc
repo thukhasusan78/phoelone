@@ -30,6 +30,8 @@ void Display::UpdateStatusBar(bool update_all) {}
 
 void Display::SetEmotion(const char* emotion) { ESP_LOGW(TAG, "SetEmotion: %s", emotion); }
 
+void Display::SetOneShotEmotion(const char* emotion) { SetEmotion(emotion); }
+
 void Display::SetChatMessage(const char* role, const char* content) {
     ESP_LOGW(TAG, "Role:%s", role);
     ESP_LOGW(TAG, "     %s", content);

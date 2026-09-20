@@ -1130,6 +1130,7 @@ add_custom_command(
         ${LANG_JSON}
         ${PROJECT_DIR}/scripts/gen_lang.py
         ${COMMON_SOUNDS}
+        ${LANG_SOUNDS}
     COMMENT "Generating ${LANG_DIR} language config"
 )
 
@@ -1251,6 +1252,14 @@ function(build_default_assets_bin)
             "${NOTO_FONTS_PATH}/png/${DEFAULT_EMOJI_COLLECTION}/*"
         )
         list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${DEFAULT_EMOJI_FILES})
+        if(DEFAULT_EMOJI_COLLECTION STREQUAL "otto-gif")
+            set(OTTO_GIF_EXTRA "${CMAKE_CURRENT_SOURCE_DIR}/assets/emojis/otto-gif-extra")
+            list(APPEND BUILD_ARGS "--emoji_overlay" "${OTTO_GIF_EXTRA}")
+            file(GLOB OTTO_GIF_EXTRA_FILES CONFIGURE_DEPENDS
+                "${OTTO_GIF_EXTRA}/*"
+            )
+            list(APPEND DEFAULT_ASSETS_DEPENDENCIES ${OTTO_GIF_EXTRA_FILES})
+        endif()
     endif()
 
     # Add default assets extra files if defined

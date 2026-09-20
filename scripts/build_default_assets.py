@@ -244,6 +244,22 @@ def process_emoji_collection(emoji_collection_dir, assets_dir):
     return emoji_list
 
 
+def merge_emoji_overlay(overlay_dir, assets_dir, emoji_list):
+    """Copy overlay GIFs/PNGs on top of the base emoji collection.
+
+    Later entries with the same name replace earlier ones so project-owned
+    Otto extras (blink, focus) remain reproducible even if vendor GIFs change.
+    """
+    overlay_entries = process_emoji_collection(overlay_dir, assets_dir)
+    if not overlay_entries:
+        return emoji_list or []
+
+    by_name = {entry["name"]: entry for entry in (emoji_list or [])}
+    for entry in overlay_entries:
+        by_name[entry["name"]] = entry
+    return list(by_name.values())
+
+
 def process_extra_files(extra_files_dir, assets_dir):
     """Process default_assets_extra_files parameter"""
     if not extra_files_dir:
@@ -748,7 +764,8 @@ def get_emoji_collection_path(default_emoji_collection, noto_fonts_path, project
 
 def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font_path,
                             emoji_collection_path, extra_files_path, output_path,
-                            multinet_model_info=None, font_bundle_id=None):
+                            multinet_model_info=None, font_bundle_id=None,
+                            emoji_overlay_path=None):
     """
     Build assets using integrated functions (no external dependencies)
     """
@@ -769,6 +786,8 @@ def build_assets_integrated(wakenet_model_paths, multinet_model_paths, text_font
         srmodels = process_sr_models(wakenet_model_paths, multinet_model_paths, temp_build_dir, assets_dir) if (wakenet_model_paths or multinet_model_paths) else None
         text_font = process_text_font(text_font_path, assets_dir) if text_font_path else None
         emoji_collection = process_emoji_collection(emoji_collection_path, assets_dir) if emoji_collection_path else None
+        if emoji_overlay_path:
+            emoji_collection = merge_emoji_overlay(emoji_overlay_path, assets_dir, emoji_collection)
         extra_files = process_extra_files(extra_files_path, assets_dir) if extra_files_path else None
         
         # Generate index.json
@@ -819,6 +838,7 @@ def main():
     parser.add_argument('--esp_sr_model_path', help='Path to ESP-SR model directory')
     parser.add_argument('--noto_fonts_path', help='Path to noto-fonts component directory')
     parser.add_argument('--extra_files', help='Path to extra files directory to be included in assets')
+    parser.add_argument('--emoji_overlay', help='Path to extra emoji files merged into the emoji collection')
     
     args = parser.parse_args()
     
@@ -890,6 +910,9 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     emoji_collection_path = get_emoji_collection_path(args.emoji_collection, args.noto_fonts_path, project_root)
+    emoji_overlay_path = args.emoji_overlay if args.emoji_overlay and os.path.exists(args.emoji_overlay) else None
+    if args.emoji_overlay and not emoji_overlay_path:
+        print(f"Warning: Emoji overlay directory not found: {args.emoji_overlay}")
     
     # Get extra files path if provided
     extra_files_path = args.extra_files
@@ -925,7 +948,7 @@ def main():
         print(f"  wake word threshold: {custom_wake_word_config['threshold']}")
     
     # Check if we have anything to build
-    if not wakenet_model_paths and not multinet_model_paths and not text_font_path and not emoji_collection_path and not extra_files_path and not multinet_model_info:
+    if not wakenet_model_paths and not multinet_model_paths and not text_font_path and not emoji_collection_path and not extra_files_path and not emoji_overlay_path and not multinet_model_info:
         print("Warning: No assets to build (no SR models, text font, emoji collection, extra files, or custom wake word)")
         # Create an empty assets.bin file
         os.makedirs(os.path.dirname(args.output), exist_ok=True)
@@ -937,7 +960,8 @@ def main():
     # Build the assets
     success = build_assets_integrated(
         wakenet_model_paths, multinet_model_paths, text_font_path, emoji_collection_path,
-        extra_files_path, args.output, multinet_model_info, font_bundle_id)
+        extra_files_path, args.output, multinet_model_info, font_bundle_id,
+        emoji_overlay_path)
     
     if not success:
         sys.exit(1)

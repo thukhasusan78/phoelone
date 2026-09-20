@@ -1,10 +1,10 @@
 #pragma once
 
+#include <lvgl.h>
+#include <functional>
+#include <memory>
 #include "../lvgl_image.h"
 #include "gifdec.h"
-#include <lvgl.h>
-#include <memory>
-#include <functional>
 
 /**
  * C++ implementation of LVGL GIF widget
@@ -80,36 +80,45 @@ public:
      */
     void SetFrameCallback(std::function<void()> callback);
 
+    /**
+     * Set callback invoked when a finite-loop GIF finishes the last frame.
+     * The callback runs on the LVGL timer task; do not destroy this object in it.
+     */
+    void SetCompletionCallback(std::function<void()> callback);
+
 private:
     // GIF decoder instance
     gd_GIF* gif_;
-    
+
     // LVGL image descriptor
     lv_img_dsc_t img_dsc_;
-    
+
     // Animation timer
     lv_timer_t* timer_;
-    
+
     // Last frame update time
     uint32_t last_call_;
-    
+
     // Animation state
     bool playing_;
     bool loaded_;
-    
+
     // Loop delay configuration
-    uint32_t loop_delay_ms_;      // Delay between loops in milliseconds
-    bool loop_waiting_;           // Whether we're waiting for the next loop
-    uint32_t loop_wait_start_;    // Timestamp when loop wait started
-    
+    uint32_t loop_delay_ms_;    // Delay between loops in milliseconds
+    bool loop_waiting_;         // Whether we're waiting for the next loop
+    uint32_t loop_wait_start_;  // Timestamp when loop wait started
+
     // Frame update callback
     std::function<void()> frame_callback_;
-    
+
+    // Fired once when a finite-loop animation reaches the GIF trailer
+    std::function<void()> completion_callback_;
+
     /**
      * Update to next frame
      */
     void NextFrame();
-    
+
     /**
      * Cleanup resources
      */

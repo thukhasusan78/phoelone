@@ -6,8 +6,9 @@
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
-#include <atomic>
+#include <cstdint>
 #include <memory>
+#include <string>
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
@@ -32,6 +33,10 @@ protected:
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
     bool hide_subtitle_ = false;  // Control whether to hide chat messages/subtitles
+    std::string requested_emotion_;
+    bool emotion_one_shot_playing_ = false;
+    bool emotion_blinking_ = false;
+    uint32_t gif_sequence_id_ = 0;
 
     void InitializeLcdThemes();
     virtual bool Lock(int timeout_ms = 0) override;
@@ -45,6 +50,7 @@ protected:
 public:
     ~LcdDisplay();
     virtual void SetEmotion(const char* emotion) override;
+    virtual void SetOneShotEmotion(const char* emotion) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
@@ -54,6 +60,14 @@ public:
 
     // Set whether to hide chat messages/subtitles
     void SetHideSubtitle(bool hide);
+
+private:
+    bool CollectionHasGif(const char* name);
+    bool ShouldPrependBlink(const char* emotion);
+    void BeginRequestedEmotion();
+    bool ApplyEmotionVisual(const char* emotion, bool loop);
+    bool StartGifEmotion(const LvglImage* image, bool loop);
+    void OnGifPlaybackFinished(uint32_t sequence_id);
 };
 
 // SPI LCD display
